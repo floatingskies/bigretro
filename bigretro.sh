@@ -32,7 +32,7 @@ set -euo pipefail
 #  CONSTANTES E VERSÃO
 # ============================================================================
 
-readonly VERSION="1.2.0"
+readonly VERSION="1.3.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
@@ -1342,7 +1342,8 @@ apply_kde_theme() {
     if [[ -n "$laf_found" ]]; then
         laf_found="$(basename "$laf_found")"
         kwriteconfig6 --file kdeglobals --group General --key LookAndFeelPackage "$laf_found"
-        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
+        # NAO definir Aurorae library aqui! Se ativarmos o library sem um tema valido,
+        # os botoes da janela somem. A funcao apply_aurorae_theme() cuida disso.
         log_info "Look-and-Feel definido: $laf_found"
     fi
 
@@ -1446,33 +1447,99 @@ EOF
         log_info "xsettingsd configurado."
     fi
 
-    # --- Configuração adicional para Flatpak ---
+    # --- Configuração para Flatpak (GTK3 + GTK4/libadwaita) ---
     if has_cmd flatpak; then
+        log_step "Configurando temas GTK para aplicativos Flatpak..."
+
+        # 1. Liberar acesso ao ~/.config/gtk-3.0 e gtk-4.0 (onde estao os settings.ini)
+        #    Tambem liberar ~/.local/share/themes e ~/.local/share/icons para arquivos de tema
+        flatpak override --user --filesystem=xdg-config/gtk-3.0:ro 2>/dev/null || true
+        flatpak override --user --filesystem=xdg-config/gtk-4.0:ro 2>/dev/null || true
+        flatpak override --user --filesystem=xdg-data/themes:ro 2>/dev/null || true
+        flatpak override --user --filesystem=xdg-data/icons:ro 2>/dev/null || true
+        log_info "Flatpak: acesso liberado a xdg-config/gtk-3.0, xdg-config/gtk-4.0, xdg-data/themes, xdg-data/icons"
+
+        # 2. Se o tema GTK esta em ~/.themes (nao acessivel nativamente pelo Flatpak),
+        #    criar link simbolico em ~/.local/share/themes para o Flatpak encontrar
+        local _fp_theme_in_local_share=false
+        for _fp_check in "$HOME/.local/share/themes/$DETECTED_GTK_THEME" "$HOME/.local/share/themes/$(echo "$DETECTED_GTK_THEME" | tr '[:upper:]' '[:lower:]')"; do
+            if [[ -d "$_fp_check" ]]; then
+                _fp_theme_in_local_share=true
+                break
+            fi
+        done
+
+        if [[ "$_fp_theme_in_local_share" == false ]]; then
+            # Buscar o tema em ~/.themes
+            local _fp_src=""
+            for _fp_base in "$HOME/.themes"; do
+                [[ -d "$_fp_base" ]] || continue
+                _fp_src="$(find "$_fp_base" -maxdepth 1 -type d -iname "${DETECTED_GTK_THEME}" -print -quit 2>/dev/null)"
+                [[ -n "$_fp_src" ]] && break
+            done
+            if [[ -n "$_fp_src" ]]; then
+                mkdir -p "$HOME/.local/share/themes"
+                local _fp_link="$HOME/.local/share/themes/$DETECTED_GTK_THEME"
+                if [[ ! -e "$_fp_link" ]]; then
+                    ln -sf "$_fp_src" "$_fp_link"
+                    log_info "Link simbolico criado: $_fp_link -> $_fp_src"
+                fi
+            fi
+        fi
+
+        # 3. Definir GTK_THEME globalmente para TODOS os Flatpaks
+        local _fp_gtk_theme_name="$DETECTED_GTK_THEME"
+        if flatpak override --user --env=GTK_THEME="$_fp_gtk_theme_name" 2>/dev/null; then
+            log_info "Flatpak: GTK_THEME=$_fp_gtk_theme_name definido globalmente."
+        else
+            log_warn "Falha ao definir GTK_THEME global para Flatpaks via 'flatpak override'."
+        fi
+
+        # 4. Definir ICON_THEME para Flatpaks
+        if [[ -n "$icon_theme" ]]; then
+            if flatpak override --user --env=ICON_THEME="$icon_theme" 2>/dev/null; then
+                log_info "Flatpak: ICON_THEME=$icon_theme definido globalmente."
+            fi
+        fi
+
+        # 5. Escrever settings.ini em cada app Flatpak instalado (garantia adicional)
         local flatpak_gtk_dir="$HOME/.var/app/"
         if [[ -d "$flatpak_gtk_dir" ]]; then
             local _fp_count=0
             while IFS= read -r -d '' _fp_app; do
+                [[ "$(basename "$_fp_app")" == "." ]] && continue
+
+                # GTK3 settings.ini
                 local _fp_gtk3="$_fp_app/config/gtk-3.0"
-                local _fp_gtk4="$_fp_app/config/gtk-4.0"
-                mkdir -p "$_fp_gtk3" "$_fp_gtk4"
+                mkdir -p "$_fp_gtk3"
                 cat > "$_fp_gtk3/settings.ini" <<EOF
 [Settings]
 gtk-theme-name=${DETECTED_GTK_THEME}
 gtk-icon-theme-name=${icon_theme}
 gtk-application-prefer-dark-theme=${gtk_dark}
+gtk-button-images=1
+gtk-menu-images=1
+gtk-toolbar-style=GTK_TOOLBAR_BOTH_HORIZ
 EOF
+
+                # GTK4 settings.ini (libadwaita)
+                local _fp_gtk4="$_fp_app/config/gtk-4.0"
+                mkdir -p "$_fp_gtk4"
                 cat > "$_fp_gtk4/settings.ini" <<EOF
 [Settings]
 gtk-theme-name=${DETECTED_GTK_THEME}
 gtk-icon-theme-name=${icon_theme}
 gtk-application-prefer-dark-theme=${gtk_dark}
 EOF
+
                 ((_fp_count++)) || true
             done < <(find "$flatpak_gtk_dir" -maxdepth 1 -type d -print0 2>/dev/null)
             if [[ "$_fp_count" -gt 0 ]]; then
-                log_info "Configuração GTK aplicada em $_fp_count app(s) Flatpak."
+                log_info "Flatpak: settings.ini escrito em $_fp_count app(s) (GTK3 + GTK4)."
             fi
         fi
+
+        log_success "Configuracao Flatpak concluida (xdg-config/gtk-3.0 + gtk-4.0)."
     fi
 
     # --- Garantir que o XDG_DATA_DIRS inclui ~/.local/share (para GTK descobrir temas) ---
@@ -1678,29 +1745,9 @@ apply_aurorae_theme() {
     # Tambem garantir que o ButtonsOnRight esta correto para Fluent (botoes a direita)
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight "true"
 
-    log_success "Tema Aurorae aplicado: $aur_theme"
-
-    # Recarregar KWin para aplicar imediatamente
-    local kwin_reloaded=false
-    if has_cmd qdbus6; then
-        qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null && kwin_reloaded=true
-        [[ "$kwin_reloaded" == false ]] && qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null && kwin_reloaded=true
-    fi
-    if [[ "$kwin_reloaded" == false ]] && has_cmd qdbus; then
-        qdbus org.kde.KWin /KWin reconfigure 2>/dev/null && kwin_reloaded=true
-        [[ "$kwin_reloaded" == false ]] && qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null && kwin_reloaded=true
-    fi
-    if [[ "$kwin_reloaded" == false ]] && has_cmd dbus-send; then
-        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reconfigure 2>/dev/null && kwin_reloaded=true
-        [[ "$kwin_reloaded" == false ]] && dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null && kwin_reloaded=true
-    fi
-
-    if [[ "$kwin_reloaded" == true ]]; then
-        log_info "KWin recarregado com sucesso."
-    else
-        log_warn "Nao foi possivel recarregar o KWin via D-Bus."
-        log_info "Pressione Shift+Alt+F12 para reiniciar o KWin manualmente."
-    fi
+    log_success "Tema Aurorae aplicado: $aur_theme (botoes a direita)"
+    # NOTA: O reload do KWin e feito pela funcao reload_plasma() no final,
+    # evitando recarregamentos duplicados que podem causar flicker.
 }
 
 apply_wallpaper() {
@@ -1914,6 +1961,12 @@ uninstall_theme() {
         rm -f "$HOME/.config/gtkrc-2.0" 2>/dev/null
         rm -f "$HOME/.config/plasma-workspace/env/gtk-theme.sh" 2>/dev/null
         rm -f "$HOME/.config/plasma-workspace/env/set-theme.sh" 2>/dev/null
+
+        # Limpar overrides do Flatpak (GTK_THEME, ICON_THEME)
+        if has_cmd flatpak; then
+            flatpak override --user --reset 2>/dev/null || true
+            log_info "Overrides do Flatpak restaurados ao padrao."
+        fi
 
         # Temas de ícones
         rm -rf "$HOME/.local/share/icons"/Fluent* 2>/dev/null
