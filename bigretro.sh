@@ -32,7 +32,7 @@ set -euo pipefail
 #  CONSTANTES E VERSÃO
 # ============================================================================
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
@@ -988,9 +988,18 @@ detect_installed_themes() {
         DETECTED_ICON_THEME="$(basename "${icon_fb:-}" 2>/dev/null)"
     fi
 
-    # --- Detectar Tema Kvantum (case-insensitive) ---
+    # --- Detectar Tema Kvantum (case-insensitive, multiplos caminhos) ---
     DETECTED_KVANTUM_THEME=""
-    if [[ -d "$config_kvantum" ]]; then
+    local kv_search_paths=(
+        "$config_kvantum"
+        "$HOME/.local/share/Kvantum"
+        "/usr/share/Kvantum"
+    )
+
+    for kv_base in "${kv_search_paths[@]}"; do
+        [[ -z "$DETECTED_KVANTUM_THEME" ]] || break
+        [[ -d "$kv_base" ]] || continue
+
         local kv_lower_mode="$THEME_MODE"
         [[ -n "$kv_lower_mode" ]] && kv_lower_mode="$(echo "$kv_lower_mode" | tr '[:upper:]' '[:lower:]')"
 
@@ -1000,10 +1009,8 @@ detect_installed_themes() {
             local kv_name_lower
             kv_name_lower="$(echo "$kv_name" | tr '[:upper:]' '[:lower:]')"
 
-            # Verificar se é um tema válido (tem arquivo .kvconfig dentro)
-            if [[ ! -f "$kv_dir"/*.kvconfig && ! -f "$kv_dir"/*.svg ]]; then
-                continue
-            fi
+            # Verificar se é um tema válido (tem arquivo .kvconfig ou .svg dentro)
+            [[ -f "$kv_dir"/*.kvconfig || -f "$kv_dir"/*.svg ]] || continue
 
             if [[ "$kv_lower_mode" == "dark" ]]; then
                 if [[ "$kv_name_lower" == *"dark"* ]]; then
@@ -1016,12 +1023,19 @@ detect_installed_themes() {
                     break
                 fi
             fi
-        done < <(find "$config_kvantum" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
-    fi
-    if [[ -z "$DETECTED_KVANTUM_THEME" && -d "$config_kvantum" ]]; then
-        local kv_fb
-        kv_fb="$(find "$config_kvantum" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
-        DETECTED_KVANTUM_THEME="$(basename "${kv_fb:-}" 2>/dev/null)"
+        done < <(find "$kv_base" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
+    done
+    # Fallback: qualquer Fluent* em qualquer caminho Kvantum
+    if [[ -z "$DETECTED_KVANTUM_THEME" ]]; then
+        for kv_base in "${kv_search_paths[@]}"; do
+            [[ -d "$kv_base" ]] || continue
+            local kv_fb
+            kv_fb="$(find "$kv_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+            if [[ -n "$kv_fb" ]]; then
+                DETECTED_KVANTUM_THEME="$(basename "$kv_fb" 2>/dev/null)"
+                break
+            fi
+        done
     fi
 
     # --- Detectar Tema GTK (case-insensitive, busca em ~/.themes e ~/.local/share/themes) ---
@@ -1296,8 +1310,43 @@ apply_kde_theme() {
         return 1
     fi
 
+    # 1. Definir esquema de cores
     kwriteconfig6 --file kdeglobals --group General --key ColorScheme "$DETECTED_COLOR_SCHEME"
-    log_success "Esquema de cores KDE definido: $DETECTED_COLOR_SCHEME"
+    log_info "Esquema de cores KDE definido: $DETECTED_COLOR_SCHEME"
+
+    # 2. Garantir que o widgetStyle esteja correto (Kvantum para Fluent)
+    local kvantum_style="kvantum"
+    if [[ "$THEME_MODE" == "dark" ]]; then
+        kvantum_style="kvantum-dark"
+    fi
+    kwriteconfig6 --file kdeglobals --group General --key widgetStyle "$kvantum_style"
+    log_info "Widget style definido: $kvantum_style"
+
+    # 3. Aplicar Look-and-Feel se disponivel
+    local lookandfeel_name=""
+    if [[ "$THEME_MODE" == "dark" ]]; then
+        lookandfeel_name="Fluent-Dark"
+    else
+        lookandfeel_name="Fluent-Light"
+    fi
+
+    # Buscar Look-and-Feel disponiveis
+    local laf_found=""
+    for laf_dir in "$HOME/.local/share/plasma/look-and-feel" "/usr/share/plasma/look-and-feel"; do
+        [[ -d "$laf_dir" ]] || continue
+        laf_found="$(find "$laf_dir" -maxdepth 1 -type d -iname "*Fluent*${THEME_MODE:-}*" -print -quit 2>/dev/null)"
+        [[ -z "$laf_found" ]] && laf_found="$(find "$laf_dir" -maxdepth 1 -type d -iname '*Fluent*' -print -quit 2>/dev/null)"
+        [[ -n "$laf_found" ]] && break
+    done
+
+    if [[ -n "$laf_found" ]]; then
+        laf_found="$(basename "$laf_found")"
+        kwriteconfig6 --file kdeglobals --group General --key LookAndFeelPackage "$laf_found"
+        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
+        log_info "Look-and-Feel definido: $laf_found"
+    fi
+
+    log_success "Tema KDE Plasma aplicado: $DETECTED_COLOR_SCHEME"
 }
 
 apply_icon_theme() {
@@ -1444,18 +1493,6 @@ SETEOF
 apply_kvantum_theme() {
     log_arrow "Aplicando estilo Kvantum..."
 
-    if ! has_cmd kvantummanager; then
-        log_warn "kvantummanager não encontrado. Pulando configuração de Kvantum."
-        log_info "Instale o Kvantum com o gerenciador de pacotes da sua distribuição."
-        return 0
-    fi
-
-    if [[ -z "$DETECTED_KVANTUM_THEME" ]]; then
-        log_warn "Nenhum tema Kvantum Fluent detectado."
-        log_info "O tema KDE ou GTK pode ter instalado um tema Kvantum separadamente."
-        return 0
-    fi
-
     # Definir estilo de widget Kvantum
     # Em modo dark, usar kvantum-dark; em modo light, usar kvantum
     local kvantum_style="kvantum"
@@ -1463,44 +1500,172 @@ apply_kvantum_theme() {
         kvantum_style="kvantum-dark"
     fi
 
+    # 1. Sempre definir o widgetStyle no kdeglobals (essencial!)
     kwriteconfig6 --file kdeglobals --group General --key widgetStyle "$kvantum_style"
     log_info "Estilo de widget definido: $kvantum_style"
 
-    # Configurar o tema Kvantum específico
-    kvantummanager --set "$DETECTED_KVANTUM_THEME" 2>/dev/null || {
-        # Fallback: escrever diretamente no kvantum.kvconfig
+    # 2. Determinar qual tema Kvantum usar
+    local kv_theme="$DETECTED_KVANTUM_THEME"
+
+    # Se não detectou via detect_installed_themes, tentar buscar agora
+    if [[ -z "$kv_theme" ]]; then
+        # Buscar em múltiplos caminhos
+        local kv_search_paths=(
+            "$HOME/.config/Kvantum"
+            "$HOME/.local/share/Kvantum"
+            "/usr/share/Kvantum"
+        )
+        local kv_mode_suffix=""
+        [[ "$THEME_MODE" == "dark" ]] && kv_mode_suffix="dark"
+
+        for kv_base in "${kv_search_paths[@]}"; do
+            [[ -d "$kv_base" ]] || continue
+            while IFS= read -r -d '' kv_dir; do
+                local kv_name
+                kv_name="$(basename "$kv_dir")"
+                local kv_name_lower
+                kv_name_lower="$(echo "$kv_name" | tr '[:upper:]' '[:lower:]')"
+
+                # Verificar se é válido (tem .kvconfig ou .svg dentro)
+                [[ -f "$kv_dir"/*.kvconfig || -f "$kv_dir"/*.svg ]] || continue
+
+                if [[ -n "$kv_mode_suffix" ]]; then
+                    # Modo dark: priorizar nomes com "dark"
+                    if [[ "$kv_name_lower" == *"dark"* ]]; then
+                        kv_theme="$kv_name"
+                        break
+                    fi
+                else
+                    # Modo light: priorizar nomes SEM "dark"
+                    if [[ "$kv_name_lower" != *"dark"* ]]; then
+                        kv_theme="$kv_name"
+                        break
+                    fi
+                fi
+            done < <(find "$kv_base" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
+            [[ -n "$kv_theme" ]] && break
+        done
+
+        # Fallback: qualquer tema Fluent em qualquer caminho
+        if [[ -z "$kv_theme" ]]; then
+            for kv_base in "${kv_search_paths[@]}"; do
+                [[ -d "$kv_base" ]] || continue
+                local kv_any
+                kv_any="$(find "$kv_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+                if [[ -n "$kv_any" ]]; then
+                    kv_theme="$(basename "$kv_any")"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # 3. Escrever diretamente no kvantum.kvconfig (SEM abrir kvantummanager GUI)
+    if [[ -n "$kv_theme" ]]; then
         mkdir -p "$HOME/.config/Kvantum"
         cat > "$HOME/.config/Kvantum/kvantum.kvconfig" <<EOF
 [General]
-theme=${DETECTED_KVANTUM_THEME}
+theme=${kv_theme}
 EOF
-    }
-    log_success "Tema Kvantum aplicado: $DETECTED_KVANTUM_THEME (estilo: $kvantum_style)"
+        log_success "Tema Kvantum aplicado: $kv_theme (widget style: $kvantum_style)"
+    else
+        log_warn "Nenhum tema Kvantum Fluent encontrado em nenhum caminho."
+        log_warn "O widget style foi definido como '$kvantum_style' (apenas estrutura, sem tema)."
+        log_info "Verifique se o Fluent-kde foi instalado corretamente."
+    fi
 }
 
 apply_aurorae_theme() {
     log_arrow "Aplicando tema Aurorae (decoracao de janelas)..."
 
-    if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
-        log_warn "Nenhum tema Aurorae Fluent detectado."
-        log_info "O tema KDE pode ter instalado um tema Aurorae separadamente."
+    local aur_theme="$DETECTED_AURORAE_THEME"
+    local aurorae_search_paths=(
+        "$HOME/.local/share/aurorae/themes"
+        "/usr/share/aurorae/themes"
+    )
+
+    # Se não detectou, tentar buscar agora de forma agressiva
+    if [[ -z "$aur_theme" ]]; then
+        log_info "Buscando temas Aurorae Fluent disponiveis..."
+
+        # Nomes esperados para cada modo
+        local expected_names=()
+        if [[ "$THEME_MODE" == "dark" ]]; then
+            expected_names=("Fluent-Dark" "FluentDark" "Fluent-dark" "FluentDarkRound" "Fluent-Dark-Round")
+        else
+            expected_names=("Fluent" "Fluent-Light" "FluentLight" "FluentRound" "Fluent-Light-Round")
+        fi
+
+        # Tentar cada nome esperado em cada caminho
+        for exp_name in "${expected_names[@]}"; do
+            [[ -n "$aur_theme" ]] && break
+            for aur_base in "${aurorae_search_paths[@]}"; do
+                [[ -d "$aur_base" ]] || continue
+                # Busca case-insensitive
+                local found
+                found="$(find "$aur_base" -maxdepth 2 -type d -iname "${exp_name}" -print -quit 2>/dev/null)"
+                if [[ -n "$found" ]]; then
+                    aur_theme="$(basename "$found")"
+                    break
+                fi
+            done
+        done
+
+        # Fallback: qualquer diretório Fluent* em qualquer caminho Aurorae
+        if [[ -z "$aur_theme" ]]; then
+            for aur_base in "${aurorae_search_paths[@]}"; do
+                [[ -d "$aur_base" ]] || continue
+                local any_fluent
+                any_fluent="$(find "$aur_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+                if [[ -n "$any_fluent" ]]; then
+                    aur_theme="$(basename "$any_fluent")"
+                    break
+                fi
+            done
+        fi
+
+        # Fallback final: buscar recursivamente (pode estar em subdiretório)
+        if [[ -z "$aur_theme" ]]; then
+            for aur_base in "${aurorae_search_paths[@]}"; do
+                [[ -d "$aur_base" ]] || continue
+                local deep_find
+                deep_find="$(find "$aur_base" -maxdepth 3 -type d -iname '*Fluent*' -print -quit 2>/dev/null)"
+                if [[ -n "$deep_find" ]]; then
+                    aur_theme="$(basename "$deep_find")"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # Se AINDA não encontrou, listar o que existe para debug
+    if [[ -z "$aur_theme" ]]; then
+        log_warn "Nenhum tema Aurorae Fluent encontrado."
         log_info "Caminhos verificados:"
-        log_info "  ~/.local/share/aurorae/themes/"
-        log_info "  /usr/share/aurorae/themes/"
+        for _p in "${aurorae_search_paths[@]}"; do
+            if [[ -d "$_p" ]]; then
+                local _contents
+                _contents="$(find "$_p" -maxdepth 2 -type d -iname '*Fluent*' 2>/dev/null | tr '\n' ', ')"
+                log_info "  $_p/  ->  ${_contents:-vazio}"
+            else
+                log_info "  $_p/  ->  nao existe"
+            fi
+        done
+        log_info "O Fluent-kde pode nao ter instalado os temas Aurorae."
+        log_info "Tente executar novamente com --kde para reinstalar."
         return 0
     fi
 
-    # Verificar se o tema realmente existe (case-insensitive)
+    # Verificar se o tema realmente existe no filesystem (case-insensitive)
     local aurorae_found_path=""
-    for aurorae_base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-        [[ -d "$aurorae_base" ]] || continue
-        aurorae_found_path="$(find "$aurorae_base" -maxdepth 2 -type d -iname "${DETECTED_AURORAE_THEME}" -print -quit 2>/dev/null)"
+    for aur_base in "${aurorae_search_paths[@]}"; do
+        [[ -d "$aur_base" ]] || continue
+        aurorae_found_path="$(find "$aur_base" -maxdepth 3 -type d -iname "${aur_theme}" -print -quit 2>/dev/null)"
         [[ -n "$aurorae_found_path" ]] && break
     done
 
     if [[ -z "$aurorae_found_path" ]]; then
-        log_warn "Tema Aurorae '$DETECTED_AURORAE_THEME' nao encontrado nos diretorios de Aurorae."
-        log_warn "Verifique se o tema foi instalado corretamente."
+        log_warn "Tema Aurorae '$aur_theme' encontrado pelo nome mas o diretorio nao existe no filesystem."
         return 0
     fi
 
@@ -1508,26 +1673,33 @@ apply_aurorae_theme() {
 
     # Definir tema de decoracao de janelas via kwinrc
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
-    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$DETECTED_AURORAE_THEME"
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$aur_theme"
 
+    # Tambem garantir que o ButtonsOnRight esta correto para Fluent (botoes a direita)
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight "true"
 
+    log_success "Tema Aurorae aplicado: $aur_theme"
 
-    log_success "Tema Aurorae aplicado: $DETECTED_AURORAE_THEME"
-
-    # Recarregar kwin para aplicar imediatamente (se disponivel)
+    # Recarregar KWin para aplicar imediatamente
     local kwin_reloaded=false
     if has_cmd qdbus6; then
-        if qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null; then
-            kwin_reloaded=true
-        fi
+        qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null && kwin_reloaded=true
+        [[ "$kwin_reloaded" == false ]] && qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null && kwin_reloaded=true
     fi
     if [[ "$kwin_reloaded" == false ]] && has_cmd qdbus; then
-        if qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null; then
-            kwin_reloaded=true
-        fi
+        qdbus org.kde.KWin /KWin reconfigure 2>/dev/null && kwin_reloaded=true
+        [[ "$kwin_reloaded" == false ]] && qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null && kwin_reloaded=true
     fi
     if [[ "$kwin_reloaded" == false ]] && has_cmd dbus-send; then
-        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
+        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reconfigure 2>/dev/null && kwin_reloaded=true
+        [[ "$kwin_reloaded" == false ]] && dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null && kwin_reloaded=true
+    fi
+
+    if [[ "$kwin_reloaded" == true ]]; then
+        log_info "KWin recarregado com sucesso."
+    else
+        log_warn "Nao foi possivel recarregar o KWin via D-Bus."
+        log_info "Pressione Shift+Alt+F12 para reiniciar o KWin manualmente."
     fi
 }
 
@@ -1643,31 +1815,43 @@ reload_plasma() {
     log_arrow "Aplicando mudancas ao vivo (sem reiniciar)..."
     local _any_success=false
 
-    # --- 1. Recarregar KWin (decoracao de janelas, esquema de cores) ---
+    # --- 1. Recarregar KWin (decoracao de janelas, esquema de cores, Aurorae) ---
     if has_cmd qdbus6; then
+        qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null && _any_success=true
+        sleep 0.3
         qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null && _any_success=true
     fi
     if has_cmd qdbus; then
+        qdbus org.kde.KWin /KWin reconfigure 2>/dev/null && _any_success=true
+        sleep 0.3
         qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null && _any_success=true
     fi
     if has_cmd dbus-send; then
+        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reconfigure 2>/dev/null && _any_success=true
+        sleep 0.3
         dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null && _any_success=true
     fi
 
-    # --- 2. Recarregar plasmashell (interface grafica, icones, paineis) ---
+    # --- 2. Reconfigurar PlasmaShell (interface grafica, paineis, icones) ---
     if has_cmd qdbus6; then
+        # Aplicar esquema de cores ao vivo
+        qdbus6 org.kde.KWin /KWin org.kde.KWin.showDebugConsole false 2>/dev/null || true
+        # Refresh do PlasmaShell
         qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && _any_success=true
         # Atualizar cache de icones do KDE
         qdbus6 org.kde.KIconThemes /KIconThemes org.kde.KIconThemes.refreshIcons 2>/dev/null || true
     fi
     if has_cmd qdbus; then
         qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && _any_success=true
+        qdbus org.kde.KIconThemes /KIconThemes org.kde.KIconThemes.refreshIcons 2>/dev/null || true
     fi
 
-    # --- 3. Recarregar Kvantum (se disponivel) ---
-    if has_cmd kvantummanager; then
-        kvantummanager --reset 2>/dev/null || true
+    # --- 3. Recarregar Kvantum via D-Bus (SEM abrir GUI) ---
+    # Escrever no kvconfig e notificar via D-Bus
+    if has_cmd qdbus6; then
+        qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
     fi
+    # NAO usar kvantummanager --reset ou --set pois abre a GUI
 
     # --- 4. Atualizar caches de icones ---
     if has_cmd gtk-update-icon-cache; then
@@ -1681,18 +1865,23 @@ reload_plasma() {
         kbuildsycoca6 2>/dev/null || true
     fi
 
-    # --- 5. Sinalizar reconfiguracao geral do Plasma ---
+    # --- 5. Sinalizar reconfiguracao geral do Plasma (desktops, wallpaper) ---
     if has_cmd qdbus6; then
         qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
             'desktops().forEach(function(d) { d.currentConfigGroup = Array("General"); d.reloadConfig(); });' 2>/dev/null || true
     fi
 
+    # --- 6. Reiniciar PlasmaShell se necessario (ultima opcao, MAS sem logout) ---
+    # Pequena pausa para os reloads acima tomarem efeito
+    sleep 0.5
+
     if [[ "$_any_success" == true ]]; then
         log_success "Mudancas aplicadas ao vivo. Os temas ja devem estar visiveis."
     else
-        log_warn "Nao foi possivel recarregar via D-Bus."
-        log_info "Pressione Ctrl+Alt+Esc para reiniciar o PlasmaShell."
+        log_warn "Nao foi possivel recarregar completamente via D-Bus."
     fi
+    log_info "Se algo nao apareceu, pressione Shift+Alt+F12 (reiniciar KWin)"
+    log_info "ou Ctrl+Alt+Esc (reiniciar PlasmaShell)."
 }
 
 # ============================================================================
