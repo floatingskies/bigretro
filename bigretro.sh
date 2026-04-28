@@ -660,19 +660,21 @@ install_gtk_theme() {
 
     cd "$clone_dir"
 
-    # Determinar variante de cor
-    local color_answer="default"
+    # Determinar argumentos de cor para o install.sh
+    # O Fluent-gtk-theme suporta: -c dark, -c light, ou sem flag (default)
+    local gtk_install_flags="-l"
     if [[ "$THEME_MODE" == "dark" ]]; then
-        color_answer="dark"
+        gtk_install_flags="-l -c dark"
+    elif [[ "$THEME_MODE" == "light" ]]; then
+        gtk_install_flags="-l -c light"
     fi
 
-    # Executar install.sh -l (libadwaita)
-    # Fluxo: 1) destino (Enter) 2) variante de cor (default/dark/light)
-    log_step "Executando install.sh -l do Fluent-gtk (color=$color_answer)..."
-    if printf '\n%s\n' "$color_answer" | bash ./install.sh -l &>> "$WORK_DIR/install_gtk.log"; then
+    # Executar install.sh com flags corretas
+    log_step "Executando install.sh $gtk_install_flags do Fluent-gtk..."
+    if bash ./install.sh $gtk_install_flags &>> "$WORK_DIR/install_gtk.log"; then
         log_success "Fluent GTK Theme (libadwaita) instalado."
     else
-        log_error "Falha na instalação do Fluent GTK Theme."
+        log_error "Falha na instalacao do Fluent GTK Theme."
         log_info "Verifique o log: $WORK_DIR/install_gtk.log"
         return 1
     fi
@@ -1454,9 +1456,15 @@ apply_kvantum_theme() {
         return 0
     fi
 
-    # Definir tema Kvantum ativo
-    kwriteconfig6 --file kdeglobals --group General --key widgetStyle "kvantum"
-    log_info "Estilo de widget definido: Kvantum"
+    # Definir estilo de widget Kvantum
+    # Em modo dark, usar kvantum-dark; em modo light, usar kvantum
+    local kvantum_style="kvantum"
+    if [[ "$THEME_MODE" == "dark" ]]; then
+        kvantum_style="kvantum-dark"
+    fi
+
+    kwriteconfig6 --file kdeglobals --group General --key widgetStyle "$kvantum_style"
+    log_info "Estilo de widget definido: $kvantum_style"
 
     # Configurar o tema Kvantum específico
     kvantummanager --set "$DETECTED_KVANTUM_THEME" 2>/dev/null || {
@@ -1467,7 +1475,7 @@ apply_kvantum_theme() {
 theme=${DETECTED_KVANTUM_THEME}
 EOF
     }
-    log_success "Tema Kvantum aplicado: $DETECTED_KVANTUM_THEME"
+    log_success "Tema Kvantum aplicado: $DETECTED_KVANTUM_THEME (estilo: $kvantum_style)"
 }
 
 apply_aurorae_theme() {
@@ -1502,12 +1510,7 @@ apply_aurorae_theme() {
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$DETECTED_AURORAE_THEME"
 
-    # Tambem definir via Plasma 6's LookAndFeel (se disponivel)
-    if [[ -f "$HOME/.config/kwinrc" ]]; then
-        # Garantir que o kwinrc tenha a secao correta
-        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
-        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
-    fi
+
 
     log_success "Tema Aurorae aplicado: $DETECTED_AURORAE_THEME"
 
@@ -1637,43 +1640,59 @@ METAEOF
 # ============================================================================
 
 reload_plasma() {
-    log_arrow "Recarregando KDE Plasma para aplicar mudanças..."
+    log_arrow "Aplicando mudancas ao vivo (sem reiniciar)..."
+    local _any_success=false
 
-    # Método 1: Usar qdbus6 (Plasma 6) ou qdbus (Plasma 5)
+    # --- 1. Recarregar KWin (decoracao de janelas, esquema de cores) ---
     if has_cmd qdbus6; then
-        qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && {
-            log_success "Plasma recarregado via qdbus6."
-            return 0
-        }
+        qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null && _any_success=true
     fi
-
     if has_cmd qdbus; then
-        qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && {
-            log_success "Plasma recarregado via qdbus."
-            return 0
-        }
+        qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null && _any_success=true
     fi
-
-    # Método 2: Recarregar via dbus-send
     if has_cmd dbus-send; then
-        dbus-send --session --dest=org.kde.plasmashell --type=method_call \
-            /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && {
-            log_success "Plasma recarregado via dbus-send."
-            return 0
-        }
+        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null && _any_success=true
     fi
 
-    # Método 3: Reiniciar plasmashell via systemctl
-    log_warn "Não foi possível recarregar via D-Bus. Tentando reiniciar plasmashell..."
-    log_warn "Isso pode causar um breve flicker na tela."
-
-    if systemctl --user restart plasma-plasmashell.service 2>/dev/null; then
-        log_success "Plasma reiniciado via systemd."
-        return 0
+    # --- 2. Recarregar plasmashell (interface grafica, icones, paineis) ---
+    if has_cmd qdbus6; then
+        qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && _any_success=true
+        # Atualizar cache de icones do KDE
+        qdbus6 org.kde.KIconThemes /KIconThemes org.kde.KIconThemes.refreshIcons 2>/dev/null || true
+    fi
+    if has_cmd qdbus; then
+        qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null && _any_success=true
     fi
 
-    log_warn "Não foi possível recarregar o Plasma automaticamente."
-    log_info "Faça logout e login, ou reinicie a sessão do Plasma manualmente."
+    # --- 3. Recarregar Kvantum (se disponivel) ---
+    if has_cmd kvantummanager; then
+        kvantummanager --reset 2>/dev/null || true
+    fi
+
+    # --- 4. Atualizar caches de icones ---
+    if has_cmd gtk-update-icon-cache; then
+        for _icon_dir in "$HOME/.local/share/icons"/Fluent*; do
+            [[ -d "$_icon_dir" ]] || continue
+            gtk-update-icon-cache -f -t "$_icon_dir" 2>/dev/null || true
+        done
+    fi
+    # Reconstruir o cache de servico do KDE
+    if has_cmd kbuildsycoca6; then
+        kbuildsycoca6 2>/dev/null || true
+    fi
+
+    # --- 5. Sinalizar reconfiguracao geral do Plasma ---
+    if has_cmd qdbus6; then
+        qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+            'desktops().forEach(function(d) { d.currentConfigGroup = Array("General"); d.reloadConfig(); });' 2>/dev/null || true
+    fi
+
+    if [[ "$_any_success" == true ]]; then
+        log_success "Mudancas aplicadas ao vivo. Os temas ja devem estar visiveis."
+    else
+        log_warn "Nao foi possivel recarregar via D-Bus."
+        log_info "Pressione Ctrl+Alt+Esc para reiniciar o PlasmaShell."
+    fi
 }
 
 # ============================================================================
@@ -1716,10 +1735,9 @@ uninstall_theme() {
         rm -rf "$HOME/.local/share/plasma/look-and-feel"/*fluent* 2>/dev/null
         log_info "Look-and-Feel Fluent removidos."
 
-        # Temas Aurorae (em ambos os caminhos)
+        # Temas Aurorae (APENAS do usuario, nunca de /usr/share)
         rm -rf "$HOME/.local/share/aurorae/themes"/Fluent* 2>/dev/null
-        rm -rf "/usr/share/aurorae/themes"/Fluent* 2>/dev/null
-        log_info "Temas Aurorae Fluent removidos."
+        log_info "Temas Aurorae Fluent removidos (apenas ~/.local/share)."
 
         # Kvantum themes
         rm -rf "$HOME/.config/Kvantum"/Fluent* 2>/dev/null
@@ -2136,45 +2154,11 @@ run_installation() {
         log_warn "Revise os logs em: $WORK_DIR/"
     fi
 
-    # 7. Perguntar sobre reinicialização
+    # 7. Aviso final (tudo ja foi aplicado ao vivo)
     printf '\n'
-    log_info "Algumas mudanças exigem uma reinicialização para serem aplicadas completamente."
-    printf '\n'
-    printf '  %bDeseja reiniciar agora?%b\n\n' "$C_BOLD" "$C_RESET"
-    printf '    %b[1]%b  Sim, reiniciar agora\n' "$C_CYAN" "$C_RESET"
-    printf '    %b[2]%b  Não, farei manualmente depois\n\n' "$C_CYAN" "$C_RESET"
-
-    prompt "Sua escolha" "1"
-    case "$REPLY" in
-        1)
-            log_arrow "Reiniciando em 5 segundos..."
-            log_info "Salve seus trabalhos abertos!"
-            if has_cmd systemctl; then
-                systemctl reboot 2>/dev/null &
-            elif has_cmd loginctl; then
-                loginctl reboot 2>/dev/null &
-            elif has_cmd qdbus6; then
-                qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.restart 2>/dev/null &
-            elif has_cmd dbus-send; then
-                dbus-send --session --dest=org.kde.Shutdown --type=method_call \
-                    /Shutdown org.kde.Shutdown.restart 2>/dev/null &
-            else
-                log_warn "Não foi possível reiniciar automaticamente."
-                log_info "Por favor, reinicie manualmente."
-            fi
-            # Esperar para a mensagem ser lida
-            sleep 3
-            # Fallback: reboot via shutdown
-            if has_cmd reboot; then
-                reboot 2>/dev/null
-            elif has_cmd shutdown; then
-                shutdown -r now 2>/dev/null
-            fi
-            ;;
-        2|*)
-            log_info "Tudo pronto! Reinicie quando desejar para completar as mudanças."
-            ;;
-    esac
+    log_info "Todas as mudancas foram aplicadas ao vivo."
+    log_info "Se algo nao apareceu corretamente, pressione Ctrl+Alt+Esc"
+    log_info "para reiniciar apenas o PlasmaShell, ou feche a sessao e abra novamente."
     printf '\n'
 }
 
