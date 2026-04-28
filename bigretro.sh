@@ -78,6 +78,7 @@ WORK_DIR=""
 if [[ -t 1 ]] && command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
     readonly C_RESET="$(tput sgr0)"
     readonly C_BOLD="$(tput bold)"
+    readonly C_WHITE="$(tput setaf 7)"
     readonly C_RED="$(tput setaf 1)"
     readonly C_GREEN="$(tput setaf 2)"
     readonly C_YELLOW="$(tput setaf 3)"
@@ -86,7 +87,7 @@ if [[ -t 1 ]] && command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || 
     readonly C_DIM="$(tput dim)"
 else
     readonly C_RESET="" C_BOLD="" C_RED="" C_GREEN="" C_YELLOW=""
-    readonly C_BLUE="" C_CYAN="" C_DIM=""
+    readonly C_BLUE="" C_CYAN="" C_DIM="" C_WHITE=""
 fi
 
 # Emojis (seguros para terminais com suporte Unicode, fallback para ASCII)
@@ -270,7 +271,7 @@ ${C_BOLD}OPÇÕES:${C_RESET}
     --uninstall          Desinstala o tema e restaura configurações
     --purge              Desinstala e remove todos os arquivos de tema
 
-  ${C_bold}Comportamento:${C_RESET}
+  ${C_BOLD}Comportamento:${C_RESET}
     --no-patch           Pula o patch de ícones bigicons-papient
     -y, --yes            Pula todas as confirmações (modo automático)
     --status             Mostra o estado atual do tema
@@ -1444,7 +1445,7 @@ run_installation() {
     if [[ "$install_errors" -eq 0 ]]; then
         printf '  %b  Instalação concluída com sucesso!%b\n' "$C_GREEN" "$C_RESET"
     else
-        printf '  %b  Instalação concluída com %d erro(s).%b\n' "$C_YELLOW" "$C_RESET" "$install_errors"
+        printf '  %b  Instalação concluída com %d erro(s).%b\n' "$C_YELLOW" "$install_errors" "$C_RESET"
     fi
     printf '  %b═══════════════════════════════════════════════%b\n' "$C_CYAN" "$C_RESET"
     printf '\n'
