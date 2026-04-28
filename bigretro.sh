@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  bigretro - BigLinux Fluent Theme Restorer
-#  Versão: 1.0.0
+#  Versão: 1.4.0
 # ============================================================================
 #
 #  Restaura a experiência clássica do tema Fluent do BigLinux no KDE Plasma 6+
@@ -32,7 +32,7 @@ set -euo pipefail
 #  CONSTANTES E VERSÃO
 # ============================================================================
 
-readonly VERSION="1.3.0"
+readonly VERSION="1.4.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
@@ -1122,39 +1122,28 @@ detect_installed_themes() {
         done
     fi
 
-    # --- Detectar Tema Aurorae (busca direta por Fluent-dark / Fluent-light) ---
+    # --- Detectar Tema Aurorae (busca em ~/.local/share/aurorae/themes) ---
     DETECTED_AURORAE_THEME=""
-    local _aur_base
-    for _aur_base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-        [[ -d "$_aur_base" ]] || continue
+    local _aur_base_dir="$HOME/.local/share/aurorae/themes"
 
-        # Busca exata: dark = Fluent-dark, light = Fluent-light (case-insensitive)
-        local _aur_target
+    if [[ -d "$_aur_base_dir" ]]; then
+        local _aur_target_name
         if [[ "${THEME_MODE,,}" == "dark" ]]; then
-            _aur_target="Fluent-dark"
+            _aur_target_name="Fluent-dark"
         else
-            _aur_target="Fluent-light"
+            _aur_target_name="Fluent-light"
         fi
+        DETECTED_AURORAE_THEME="$(ls -1 "$_aur_base_dir" 2>/dev/null | grep -i "$_aur_target_name" | head -1)"
+    fi
 
-        local _aur_found
-        _aur_found="$(find "$_aur_base" -maxdepth 1 -type d -iname "$_aur_target" -print -quit 2>/dev/null)"
-        if [[ -n "$_aur_found" ]]; then
-            DETECTED_AURORAE_THEME="$(basename "$_aur_found")"
-            break
-        fi
-    done
+    # Fallback: qualquer Fluent* em ~/.local/share/aurorae/themes
+    if [[ -z "$DETECTED_AURORAE_THEME" && -d "$_aur_base_dir" ]]; then
+        DETECTED_AURORAE_THEME="$(ls -1 "$_aur_base_dir" 2>/dev/null | grep -i 'fluent' | head -1)"
+    fi
 
-    # Fallback: qualquer Fluent* no primeiro caminho que tiver
-    if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
-        for _aur_base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-            [[ -d "$_aur_base" ]] || continue
-            local _aur_any
-            _aur_any="$(find "$_aur_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
-            if [[ -n "$_aur_any" ]]; then
-                DETECTED_AURORAE_THEME="$(basename "$_aur_any")"
-                break
-            fi
-        done
+    # Fallback: /usr/share/aurorae/themes
+    if [[ -z "$DETECTED_AURORAE_THEME" && -d "/usr/share/aurorae/themes" ]]; then
+        DETECTED_AURORAE_THEME="$(ls -1 "/usr/share/aurorae/themes" 2>/dev/null | grep -i 'fluent' | head -1)"
     fi
 
     # --- Detectar Wallpaper big-retro (case-insensitive, arquivo ou diretório) ---
@@ -1609,7 +1598,7 @@ EOF
 apply_aurorae_theme() {
     log_arrow "Aplicando tema Aurorae (decoracao de janelas)..."
 
-    # 1. Determinar o nome do tema: Fluent-dark ou Fluent-light
+    # 1. Determinar o nome alvo: Fluent-dark ou Fluent-light
     local aur_target
     if [[ "${THEME_MODE,,}" == "dark" ]]; then
         aur_target="Fluent-dark"
@@ -1617,65 +1606,50 @@ apply_aurorae_theme() {
         aur_target="Fluent-light"
     fi
 
-    # 2. Buscar o diretorio do tema (case-insensitive)
-    local aur_path=""
-    for _base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-        [[ -d "$_base" ]] || continue
-        aur_path="$(find "$_base" -maxdepth 1 -type d -iname "$aur_target" -print -quit 2>/dev/null)"
-        [[ -n "$aur_path" ]] && break
-    done
+    # 2. Buscar o diretorio do tema em ~/.local/share/aurorae/themes
+    local aur_base="$HOME/.local/share/aurorae/themes"
+    local aur_name=""
 
-    # Fallback: usar o que foi detectado em detect_installed_themes
-    if [[ -z "$aur_path" && -n "$DETECTED_AURORAE_THEME" ]]; then
-        for _base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-            [[ -d "$_base" ]] || continue
-            aur_path="$(find "$_base" -maxdepth 1 -type d -iname "$DETECTED_AURORAE_THEME" -print -quit 2>/dev/null)"
-            [[ -n "$aur_path" ]] && break
-        done
+    if [[ -d "$aur_base" ]]; then
+        # ls + grep: simples, rapido, case-insensitive
+        aur_name="$(ls -1 "$aur_base" 2>/dev/null | grep -i "$aur_target" | head -1)"
     fi
 
-    # Fallback final: qualquer Fluent*
-    if [[ -z "$aur_path" ]]; then
-        for _base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-            [[ -d "$_base" ]] || continue
-            aur_path="$(find "$_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
-            [[ -n "$aur_path" ]] && break
-        done
+    # 3. Fallback: qualquer dir Fluent* em ~/.local/share/aurorae/themes
+    if [[ -z "$aur_name" && -d "$aur_base" ]]; then
+        aur_name="$(ls -1 "$aur_base" 2>/dev/null | grep -i 'fluent' | head -1)"
     fi
 
-    # 3. Se nao encontrou nada, abortar com debug
-    if [[ -z "$aur_path" ]]; then
+    # 4. Fallback: /usr/share/aurorae/themes
+    if [[ -z "$aur_name" ]]; then
+        local sys_base="/usr/share/aurorae/themes"
+        if [[ -d "$sys_base" ]]; then
+            aur_name="$(ls -1 "$sys_base" 2>/dev/null | grep -i "$aur_target" | head -1)"
+        fi
+        if [[ -z "$aur_name" && -d "$sys_base" ]]; then
+            aur_name="$(ls -1 "$sys_base" 2>/dev/null | grep -i 'fluent' | head -1)"
+        fi
+    fi
+
+    # 5. Se nao encontrou, debug e sair
+    if [[ -z "$aur_name" ]]; then
         log_warn "Nenhum tema Aurorae Fluent encontrado."
         log_info "Buscado: $aur_target"
-        for _p in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
-            if [[ -d "$_p" ]]; then
-                log_info "  $_p : $(ls -1 "$_p" 2>/dev/null | tr '\n' ', ')"
-            else
-                log_info "  $_p : nao existe"
-            fi
-        done
+        log_info "Conteudo de $aur_base:"
+        ls -1 "$aur_base" 2>/dev/null | while read -r line; do log_info "  $line"; done
+        log_info "Conteudo de /usr/share/aurorae/themes:"
+        ls -1 "/usr/share/aurorae/themes" 2>/dev/null | while read -r line; do log_info "  $line"; done
         return 1
     fi
 
-    # 4. Pegar o nome exato do diretorio (respeita case original no filesystem)
-    local aur_name
-    aur_name="$(basename "$aur_path")"
+    log_info "Aurorae encontrado: $aur_name"
 
-    log_info "Aurorae: diretorio=$aur_path  nome=$aur_name"
-
-    # 5. Verificar se o tema tem os arquivos minimos (decoração SVG ou RC)
-    if [[ ! -f "$aur_path/decoration.svg" && ! -f "$aur_path/decor*.rc" && ! -f "$aur_path/metadata.desktop" ]]; then
-        log_warn "Diretorio $aur_name nao parece um tema Aurorae valido (sem decoration.svg/rc/metadata.desktop)."
-        log_warn "Conteudo: $(ls -1 "$aur_path" 2>/dev/null | head -5 | tr '\n' ', ')"
-        return 1
-    fi
-
-    # 6. Escrever no kwinrc: library + theme + botões
+    # 6. Escrever no kwinrc: library + theme + botoes a direita
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$aur_name"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight "true"
 
-    log_success "Tema Aurorae aplicado: $aur_name (library=org.kde.kwin.aurorae, botoes a direita)"
+    log_success "Aurorae aplicado: $aur_name"
 }
 
 apply_wallpaper() {
@@ -2291,7 +2265,7 @@ run_installation() {
 
     if [[ "$APPLY_AURORAE" == true ]]; then
         printf '\n'
-        apply_aurorae_theme || true
+        apply_aurorae_theme || ((install_errors++)) || true
     fi
 
     if [[ "$APPLY_WALLPAPER" == true ]]; then
