@@ -37,7 +37,7 @@ readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
 readonly BIGICONS_SOURCE="/usr/share/icons/bigicons-papient"
-readonly WALLPAPER_SOURCE="/usr/share/wallpapers/Big-retro"
+readonly WALLPAPER_SOURCE="/usr/share/wallpapers/big-retro"
 readonly WALLPAPER_EXTENSIONS=(".jpg" ".jpeg" ".png" ".heic")
 
 # Repositórios oficiais do vinceliuice no GitHub
@@ -913,171 +913,193 @@ detect_installed_themes() {
     local home_share="$HOME/.local/share"
     local config_kvantum="$HOME/.config/Kvantum"
 
-    # --- Detectar Esquema de Cores KDE ---
+    # --- Detectar Esquema de Cores KDE (case-insensitive) ---
     DETECTED_COLOR_SCHEME=""
     if [[ -d "$home_share/color-schemes" ]]; then
-        for cs_file in "$home_share/color-schemes"/Fluent*.colors; do
-            [[ -f "$cs_file" ]] || continue
+        local cs_lower_mode="$THEME_MODE"
+        [[ -n "$cs_lower_mode" ]] && cs_lower_mode="$(echo "$cs_lower_mode" | tr '[:upper:]' '[:lower:]')"
+
+        while IFS= read -r -d '' cs_file; do
             local cs_name
             cs_name="$(basename "$cs_file" .colors)"
-            # Extrair nome de dentro do arquivo (campo Name=)
             local file_name
             file_name="$(grep -oP '^Name=\K.*' "$cs_file" 2>/dev/null | head -1)"
             file_name="${file_name:-$cs_name}"
+            local file_name_lower
+            file_name_lower="$(echo "$file_name" | tr '[:upper:]' '[:lower:]')"
+            local cs_name_lower
+            cs_name_lower="$(echo "$cs_name" | tr '[:upper:]' '[:lower:]')"
 
-            if [[ "$THEME_MODE" == "dark" ]]; then
-                if [[ "$file_name" == *"Dark"* || "$cs_name" == *"Dark"* ]]; then
+            if [[ "$cs_lower_mode" == "dark" ]]; then
+                if [[ "$file_name_lower" == *"dark"* || "$cs_name_lower" == *"dark"* ]]; then
                     DETECTED_COLOR_SCHEME="$file_name"
                     break
                 fi
             else
-                if [[ "$file_name" != *"Dark"* && "$cs_name" != *"Dark"* ]]; then
+                if [[ "$file_name_lower" != *"dark"* && "$cs_name_lower" != *"dark"* ]]; then
                     DETECTED_COLOR_SCHEME="$file_name"
                     break
                 fi
             fi
-        done
+        done < <(find "$home_share/color-schemes" -maxdepth 1 -type f -iname 'Fluent*.colors' -print0 2>/dev/null | sort -z)
     fi
-    # Fallback: se não encontrou pelo modo, pegar qualquer Fluent
+    # Fallback: qualquer Fluent
     if [[ -z "$DETECTED_COLOR_SCHEME" && -d "$home_share/color-schemes" ]]; then
-        for cs_file in "$home_share/color-schemes"/Fluent*.colors; do
-            [[ -f "$cs_file" ]] || continue
-            DETECTED_COLOR_SCHEME="$(grep -oP '^Name=\K.*' "$cs_file" 2>/dev/null | head -1)"
-            DETECTED_COLOR_SCHEME="${DETECTED_COLOR_SCHEME:-$(basename "$cs_file" .colors)}"
-            break
-        done
+        local cs_fb
+        cs_fb="$(find "$home_share/color-schemes" -maxdepth 1 -type f -iname 'Fluent*.colors' -print -quit 2>/dev/null)"
+        if [[ -n "$cs_fb" ]]; then
+            DETECTED_COLOR_SCHEME="$(grep -oP '^Name=\K.*' "$cs_fb" 2>/dev/null | head -1)"
+            DETECTED_COLOR_SCHEME="${DETECTED_COLOR_SCHEME:-$(basename "$cs_fb" .colors)}"
+        fi
     fi
 
-    # --- Detectar Tema de Ícones ---
+    # --- Detectar Tema de Ícones (case-insensitive) ---
     DETECTED_ICON_THEME=""
     if [[ -d "$home_share/icons" ]]; then
-        for icon_dir in "$home_share/icons"/Fluent*; do
-            [[ -d "$icon_dir" ]] || continue
+        local icon_lower_mode="$THEME_MODE"
+        [[ -n "$icon_lower_mode" ]] && icon_lower_mode="$(echo "$icon_lower_mode" | tr '[:upper:]' '[:lower:]')"
+
+        while IFS= read -r -d '' icon_dir; do
             local icon_name
             icon_name="$(basename "$icon_dir")"
+            local icon_name_lower
+            icon_name_lower="$(echo "$icon_name" | tr '[:upper:]' '[:lower:]')"
 
-            if [[ "$THEME_MODE" == "dark" ]]; then
-                if [[ "$icon_name" == *"dark"* || "$icon_name" == *"Dark"* ]]; then
+            if [[ "$icon_lower_mode" == "dark" ]]; then
+                if [[ "$icon_name_lower" == *"dark"* ]]; then
                     DETECTED_ICON_THEME="$icon_name"
                     break
                 fi
             else
-                if [[ "$icon_name" != *"dark"* && "$icon_name" != *"Dark"* ]]; then
+                if [[ "$icon_name_lower" != *"dark"* ]]; then
                     DETECTED_ICON_THEME="$icon_name"
                     break
                 fi
             fi
-        done
+        done < <(find "$home_share/icons" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
     if [[ -z "$DETECTED_ICON_THEME" && -d "$home_share/icons" ]]; then
-        for icon_dir in "$home_share/icons"/Fluent*; do
-            [[ -d "$icon_dir" ]] || continue
-            DETECTED_ICON_THEME="$(basename "$icon_dir")"
-            break
-        done
+        local icon_fb
+        icon_fb="$(find "$home_share/icons" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+        DETECTED_ICON_THEME="$(basename "${icon_fb:-}" 2>/dev/null)"
     fi
 
-    # --- Detectar Tema Kvantum ---
+    # --- Detectar Tema Kvantum (case-insensitive) ---
     DETECTED_KVANTUM_THEME=""
     if [[ -d "$config_kvantum" ]]; then
-        for kv_dir in "$config_kvantum"/*/; do
-            [[ -d "$kv_dir" ]] || continue
+        local kv_lower_mode="$THEME_MODE"
+        [[ -n "$kv_lower_mode" ]] && kv_lower_mode="$(echo "$kv_lower_mode" | tr '[:upper:]' '[:lower:]')"
+
+        while IFS= read -r -d '' kv_dir; do
             local kv_name
             kv_name="$(basename "$kv_dir")"
+            local kv_name_lower
+            kv_name_lower="$(echo "$kv_name" | tr '[:upper:]' '[:lower:]')"
 
             # Verificar se é um tema válido (tem arquivo .kvconfig dentro)
             if [[ ! -f "$kv_dir"/*.kvconfig && ! -f "$kv_dir"/*.svg ]]; then
                 continue
             fi
 
-            if [[ "$THEME_MODE" == "dark" ]]; then
-                if [[ "$kv_name" == *"Dark"* || "$kv_name" == *"dark"* ]]; then
+            if [[ "$kv_lower_mode" == "dark" ]]; then
+                if [[ "$kv_name_lower" == *"dark"* ]]; then
                     DETECTED_KVANTUM_THEME="$kv_name"
                     break
                 fi
             else
-                if [[ "$kv_name" != *"Dark"* && "$kv_name" != *"dark"* ]]; then
+                if [[ "$kv_name_lower" != *"dark"* ]]; then
                     DETECTED_KVANTUM_THEME="$kv_name"
                     break
                 fi
             fi
-        done
+        done < <(find "$config_kvantum" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
     if [[ -z "$DETECTED_KVANTUM_THEME" && -d "$config_kvantum" ]]; then
-        for kv_dir in "$config_kvantum"/*/; do
-            [[ -d "$kv_dir" ]] || continue
-            local kv_base
-            kv_base="$(basename "$kv_dir")"
-            if [[ "$kv_base" == "Fluent"* ]]; then
-                DETECTED_KVANTUM_THEME="$kv_base"
-                break
-            fi
-        done
+        local kv_fb
+        kv_fb="$(find "$config_kvantum" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+        DETECTED_KVANTUM_THEME="$(basename "${kv_fb:-}" 2>/dev/null)"
     fi
 
-    # --- Detectar Tema GTK (nomes fixos: Fluent-Dark / Fluent-Light) ---
+    # --- Detectar Tema GTK (case-insensitive) ---
     DETECTED_GTK_THEME=""
-    if [[ "$THEME_MODE" == "dark" ]]; then
-        if [[ -d "$home_share/themes/Fluent-Dark" ]]; then
-            DETECTED_GTK_THEME="Fluent-Dark"
-        elif [[ -d "$home_share/themes/Fluent-dark" ]]; then
-            DETECTED_GTK_THEME="Fluent-dark"
-        fi
-    else
-        if [[ -d "$home_share/themes/Fluent-Light" ]]; then
-            DETECTED_GTK_THEME="Fluent-Light"
-        elif [[ -d "$home_share/themes/Fluent-light" ]]; then
-            DETECTED_GTK_THEME="Fluent-light"
-        fi
+    if [[ -d "$home_share/themes" ]]; then
+        local gtk_lower_mode="$THEME_MODE"
+        [[ -n "$gtk_lower_mode" ]] && gtk_lower_mode="$(echo "$gtk_lower_mode" | tr '[:upper:]' '[:lower:]')"
+
+        while IFS= read -r -d '' gtk_dir; do
+            local gtk_name
+            gtk_name="$(basename "$gtk_dir")"
+            local gtk_name_lower
+            gtk_name_lower="$(echo "$gtk_name" | tr '[:upper:]' '[:lower:]')"
+
+            # Verificar se é um tema GTK válido
+            [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" ]] || continue
+
+            if [[ "$gtk_lower_mode" == "dark" ]]; then
+                if [[ "$gtk_name_lower" == *"dark"* ]]; then
+                    DETECTED_GTK_THEME="$gtk_name"
+                    break
+                fi
+            else
+                if [[ "$gtk_name_lower" != *"dark"* ]]; then
+                    DETECTED_GTK_THEME="$gtk_name"
+                    break
+                fi
+            fi
+        done < <(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
-    # Fallback: buscar qualquer Fluent* com gtk
+    # Fallback: qualquer Fluent* com gtk
     if [[ -z "$DETECTED_GTK_THEME" && -d "$home_share/themes" ]]; then
-        for gtk_dir in "$home_share/themes"/Fluent*; do
-            [[ -d "$gtk_dir" ]] || continue
+        while IFS= read -r -d '' gtk_dir; do
             if [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" ]]; then
                 DETECTED_GTK_THEME="$(basename "$gtk_dir")"
                 break
             fi
-        done
+        done < <(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
 
-    # --- Detectar Tema Aurorae ---
+    # --- Detectar Tema Aurorae (case-insensitive) ---
     DETECTED_AURORAE_THEME=""
     local aurorae_base="$HOME/.local/share/aurorae/themes"
     if [[ -d "$aurorae_base" ]]; then
-        if [[ "$THEME_MODE" == "dark" ]]; then
-            for aur_dir in "$aurorae_base"/Fluent*; do
-                [[ -d "$aur_dir" ]] || continue
-                local aur_name
-                aur_name="$(basename "$aur_dir")"
-                if [[ "$aur_name" == *"dark"* || "$aur_name" == *"Dark"* ]]; then
+        local aur_lower_mode="$THEME_MODE"
+        [[ -n "$aur_lower_mode" ]] && aur_lower_mode="$(echo "$aur_lower_mode" | tr '[:upper:]' '[:lower:]')"
+
+        while IFS= read -r -d '' aur_dir; do
+            local aur_name
+            aur_name="$(basename "$aur_dir")"
+            local aur_name_lower
+            aur_name_lower="$(echo "$aur_name" | tr '[:upper:]' '[:lower:]')"
+
+            if [[ "$aur_lower_mode" == "dark" ]]; then
+                if [[ "$aur_name_lower" == *"dark"* ]]; then
                     DETECTED_AURORAE_THEME="$aur_name"
                     break
                 fi
-            done
-        else
-            for aur_dir in "$aurorae_base"/Fluent*; do
-                [[ -d "$aur_dir" ]] || continue
-                local aur_name
-                aur_name="$(basename "$aur_dir")"
-                if [[ "$aur_name" != *"dark"* && "$aur_name" != *"Dark"* ]]; then
+            else
+                if [[ "$aur_name_lower" != *"dark"* ]]; then
                     DETECTED_AURORAE_THEME="$aur_name"
                     break
                 fi
-            done
-        fi
+            fi
+        done < <(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
+    fi
+    # Fallback: qualquer Fluent* em aurorae
+    if [[ -z "$DETECTED_AURORAE_THEME" && -d "$aurorae_base" ]]; then
+        DETECTED_AURORAE_THEME="$(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+        DETECTED_AURORAE_THEME="$(basename "${DETECTED_AURORAE_THEME:-}" 2>/dev/null)"
     fi
 
-    # --- Detectar Wallpaper big-retro ---
+    # --- Detectar Wallpaper big-retro (case-insensitive, any nesting) ---
     DETECTED_WALLPAPER_FILE=""
     if [[ -d "$WALLPAPER_SOURCE" ]]; then
-        for ext in "${WALLPAPER_EXTENSIONS[@]}"; do
-            local ext_upper="${ext^^}"
-            for img_file in "$WALLPAPER_SOURCE"/*"$ext" "$WALLPAPER_SOURCE"/*"$ext_upper"; do
-                [[ -f "$img_file" ]] || continue
-                DETECTED_WALLPAPER_FILE="$img_file"
-                break 2
-            done
+        for ext in jpg jpeg png heic JPG JPEG PNG HEIC; do
+            local found
+            found="$(find "$WALLPAPER_SOURCE" -maxdepth 3 -type f \( -iname "*.$ext" \) -print -quit 2>/dev/null)"
+            if [[ -n "$found" && -f "$found" ]]; then
+                DETECTED_WALLPAPER_FILE="$found"
+                break
+            fi
         done
     fi
 
@@ -1088,6 +1110,27 @@ detect_installed_themes() {
     log_info "  Tema GTK:          ${DETECTED_GTK_THEME:-${C_RED}não detectado${C_RESET}}"
     log_info "  Tema Aurorae:      ${DETECTED_AURORAE_THEME:-${C_RED}não detectado${C_RESET}}"
     log_info "  Wallpaper:         ${DETECTED_WALLPAPER_FILE:-${C_RED}não detectado${C_RESET}}"
+
+    # Debug: listar o que foi realmente instalado (útil para diagnóstico)
+    local _debug_missing=false
+    [[ -z "$DETECTED_GTK_THEME" ]] && _debug_missing=true
+    [[ -z "$DETECTED_AURORAE_THEME" ]] && _debug_missing=true
+    [[ -z "$DETECTED_WALLPAPER_FILE" ]] && _debug_missing=true
+
+    if [[ "$_debug_missing" == true ]]; then
+        log_info "  [Debug] Conteúdo real dos diretórios:"
+        if [[ -d "$home_share/themes" ]]; then
+            log_info "    themes/         $(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+        fi
+        if [[ -d "$aurorae_base" ]]; then
+            log_info "    aurorae/        $(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+        fi
+        if [[ -d "$WALLPAPER_SOURCE" ]]; then
+            log_info "    wallpaper/      $(find "$WALLPAPER_SOURCE" -maxdepth 3 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+        else
+            log_info "    wallpaper/      ${C_RED}diretório $WALLPAPER_SOURCE não existe${C_RESET}"
+        fi
+    fi
 }
 
 # ============================================================================
@@ -1788,39 +1831,43 @@ run_installation() {
         log_warn "Revise os logs em: $WORK_DIR/"
     fi
 
-    # 7. Perguntar sobre logoff
+    # 7. Perguntar sobre reinicialização
     printf '\n'
-    log_info "Algumas mudanças exigem um novo login para serem aplicadas completamente."
+    log_info "Algumas mudanças exigem uma reinicialização para serem aplicadas completamente."
     printf '\n'
-    printf '  %bDeseja fazer logoff agora?%b\n\n' "$C_BOLD" "$C_RESET"
-    printf '    %b[1]%b  Sim, fazer logoff agora\n' "$C_CYAN" "$C_RESET"
+    printf '  %bDeseja reiniciar agora?%b\n\n' "$C_BOLD" "$C_RESET"
+    printf '    %b[1]%b  Sim, reiniciar agora\n' "$C_CYAN" "$C_RESET"
     printf '    %b[2]%b  Não, farei manualmente depois\n\n' "$C_CYAN" "$C_RESET"
 
     prompt "Sua escolha" "1"
     case "$REPLY" in
         1)
-            log_arrow "Fazendo logoff em 5 segundos..."
+            log_arrow "Reiniciando em 5 segundos..."
             log_info "Salve seus trabalhos abertos!"
-            if has_cmd loginctl; then
-                loginctl terminate-user "$(whoami)" &>/dev/null &
+            if has_cmd systemctl; then
+                systemctl reboot 2>/dev/null &
+            elif has_cmd loginctl; then
+                loginctl reboot 2>/dev/null &
             elif has_cmd qdbus6; then
-                qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null &
+                qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.restart 2>/dev/null &
             elif has_cmd dbus-send; then
                 dbus-send --session --dest=org.kde.Shutdown --type=method_call \
-                    /Shutdown org.kde.Shutdown.logout 2>/dev/null &
+                    /Shutdown org.kde.Shutdown.restart 2>/dev/null &
             else
-                log_warn "Não foi possível iniciar o logoff automaticamente."
-                log_info "Por favor, faça logoff manualmente."
+                log_warn "Não foi possível reiniciar automaticamente."
+                log_info "Por favor, reinicie manualmente."
             fi
-            # Esperar um pouco para a mensagem ser lida
+            # Esperar para a mensagem ser lida
             sleep 3
-            # Fallback: kill sessão X/Wayland
-            if has_cmd loginctl; then
-                loginctl terminate-user "$(whoami)" 2>/dev/null
+            # Fallback: reboot via shutdown
+            if has_cmd reboot; then
+                reboot 2>/dev/null
+            elif has_cmd shutdown; then
+                shutdown -r now 2>/dev/null
             fi
             ;;
         2|*)
-            log_info "Tudo pronto! Faça logoff quando desejar para completar as mudanças."
+            log_info "Tudo pronto! Reinicie quando desejar para completar as mudanças."
             ;;
     esac
     printf '\n'
