@@ -37,7 +37,7 @@ readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
 readonly BIGICONS_SOURCE="/usr/share/icons/bigicons-papient"
-readonly WALLPAPER_SOURCE="/usr/share/wallpapers/big-retro"
+readonly WALLPAPER_SOURCE="/usr/share/wallpapers/Big-retro"
 readonly WALLPAPER_EXTENSIONS=(".jpg" ".jpeg" ".png" ".heic")
 
 # Repositórios oficiais do vinceliuice no GitHub
