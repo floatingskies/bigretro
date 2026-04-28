@@ -37,6 +37,8 @@ readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
 readonly BIGICONS_SOURCE="/usr/share/icons/bigicons-papient"
+readonly WALLPAPER_SOURCE="/usr/share/wallpapers/big-retro"
+readonly WALLPAPER_EXTENSIONS=(".jpg" ".jpeg" ".png" ".heic")
 
 # Repositórios oficiais do vinceliuice no GitHub
 readonly REPO_KDE="vinceliuice/Fluent-kde"
@@ -55,6 +57,8 @@ APPLY_KDE=false
 APPLY_GTK=false
 APPLY_ICONS=false
 APPLY_KVANTUM=false
+APPLY_AURORAE=false
+APPLY_WALLPAPER=false
 APPLY_PATCH=true         # Aplicar patch bigicons por padrão
 SKIP_CONFIRM=false       # Modo não-interativo (-y/--yes)
 UNINSTALL_MODE=false
@@ -67,6 +71,8 @@ DETECTED_COLOR_SCHEME=""
 DETECTED_ICON_THEME=""
 DETECTED_KVANTUM_THEME=""
 DETECTED_GTK_THEME=""
+DETECTED_AURORAE_THEME=""
+DETECTED_WALLPAPER_FILE=""
 
 # Diretório temporário de trabalho (criado sob demanda)
 WORK_DIR=""
@@ -260,8 +266,10 @@ ${C_BOLD}OPÇÕES:${C_RESET}
     --full               Aplica todos os componentes
     --kde                Instala e aplica o tema KDE Plasma
     --gtk                Instala e aplica o tema GTK (libadwaita)
-    --icons              Instala ícones Fluent + patch bigicons
+    --icons              Instala ícones Fluent + patch bigicons + lixeira
     --kvantum            Aplica estilo de widget Kvantum
+    --aurorae            Aplica tema de decoração de janelas Aurorae
+    --wallpaper          Aplica wallpaper big-retro
 
   ${C_BOLD}Modo de cor:${C_RESET}
     --dark               Utiliza variante escura
@@ -442,6 +450,27 @@ create_backup() {
         cp "$HOME/.config/plasma-workspace/env/gtk-theme.sh" "$backup_dir/gtk-theme.sh"
     fi
 
+    # --- Aurorae / Decoração de janelas ---
+    local aurorae_lib aurorae_theme
+    aurorae_lib="$(kreadconfig6 --file kwinrc --group org.kde.kdecoration2 --key library 2>/dev/null | tr -d '[:space:]' || true)"
+    aurorae_theme="$(kreadconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme 2>/dev/null | tr -d '[:space:]' || true)"
+    echo "${aurorae_lib:-}" > "$backup_dir/aurorae_library"
+    echo "${aurorae_theme:-}" > "$backup_dir/aurorae_theme"
+    if [[ -f "$HOME/.config/kwinrc" ]]; then
+        cp "$HOME/.config/kwinrc" "$backup_dir/kwinrc"
+    fi
+
+    # --- Wallpaper ---
+    local current_wallpaper
+    current_wallpaper="$(kreadconfig6 --file plasma-org.kde.plasma.desktop-appletsrc --group ContainmentActions --key Image 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -z "$current_wallpaper" ]]; then
+        current_wallpaper="$(kreadconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
+    echo "${current_wallpaper:-}" > "$backup_dir/wallpaper_image"
+    if [[ -f "$HOME/.config/plasmarc" ]]; then
+        cp "$HOME/.config/plasmarc" "$backup_dir/plasmarc"
+    fi
+
     # --- Metadados do backup ---
     cat > "$backup_dir/backup_info" <<BACKUP_EOF
 bigretro_backup_version=$VERSION
@@ -543,6 +572,18 @@ restore_backup() {
         log_info "Variável de ambiente GTK restaurada"
     elif [[ -f "$HOME/.config/plasma-workspace/env/gtk-theme.sh" ]]; then
         rm -f "$HOME/.config/plasma-workspace/env/gtk-theme.sh"
+    fi
+
+    # --- Restaurar Aurorae / Decoração de janelas ---
+    if [[ -f "$backup_dir/kwinrc" ]]; then
+        cp "$backup_dir/kwinrc" "$HOME/.config/kwinrc"
+        log_info "Configuração Aurorae/kwinrc restaurada"
+    fi
+
+    # --- Restaurar Wallpaper ---
+    if [[ -f "$backup_dir/plasmarc" ]]; then
+        cp "$backup_dir/plasmarc" "$HOME/.config/plasmarc"
+        log_info "Configuração plasmarc restaurada"
     fi
 
     log_success "Configurações originais restauradas com sucesso!"
@@ -766,6 +807,103 @@ patch_bigicons() {
 }
 
 # ============================================================================
+#  PATCH ÍCONE DA LIXEIRA COLORIDO
+# ============================================================================
+
+patch_trash_icons() {
+    log_arrow "Aplicando patch de ícone colorido da lixeira..."
+
+    # Encontrar diretórios de temas Fluent em ~/.local/share/icons/
+    local fluent_dirs=()
+    local dest_base="$HOME/.local/share/icons"
+
+    if [[ ! -d "$dest_base" ]]; then
+        log_warn "Diretório de ícones do usuário não existe: $dest_base"
+        return 0
+    fi
+
+    for theme_dir in "$dest_base"/Fluent*; do
+        if [[ -d "$theme_dir" ]]; then
+            fluent_dirs+=("$theme_dir")
+        fi
+    done
+
+    if [[ ${#fluent_dirs[@]} -eq 0 ]]; then
+        log_warn "Nenhum diretório de tema Fluent encontrado em $dest_base"
+        return 0
+    fi
+
+    local total_patched=0
+
+    for theme_dir in "${fluent_dirs[@]}"; do
+        local theme_name
+        theme_name="$(basename "$theme_dir")"
+        local patched=0
+
+        # Buscar o ícone user-trash-full nos diretórios de tamanho (scalable, 48, 64, etc)
+        # em places/ — este é o ícone colorido da lixeira cheia
+        local trash_full_source=""
+        for size_dir in "$theme_dir"/scalable/places "$theme_dir"/48x48/places "$theme_dir"/64x64/places "$theme_dir"/places; do
+            for ext in .svg .png .png.xz; do
+                if [[ -f "$size_dir/user-trash-full${ext}" ]]; then
+                    trash_full_source="$size_dir/user-trash-full${ext}"
+                    break 2
+                fi
+            done
+        done
+
+        if [[ -z "$trash_full_source" ]]; then
+            # Tentar wildcard para encontrar qualquer user-trash-full
+            trash_full_source="$(find "$theme_dir" -type f -name 'user-trash-full.*' -print -quit 2>/dev/null || true)"
+            trash_full_source="${trash_full_source%%$'\n'*}"
+        fi
+
+        if [[ -z "$trash_full_source" || ! -f "$trash_full_source" ]]; then
+            log_info "  $theme_name: ícone user-trash-full não encontrado, pulando"
+            continue
+        fi
+
+        # Determinar a extensão do ícone fonte
+        local icon_ext
+        icon_ext="${trash_full_source##*.}"
+
+        # Diretório destino para symbolic
+        local symbolic_places="$theme_dir/symbolic/places"
+        mkdir -p "$symbolic_places"
+
+        # Copiar como user-trash-symbolic.<ext>
+        if [[ ! -f "$symbolic_places/user-trash-symbolic.${icon_ext}" ]]; then
+            cp -f "$trash_full_source" "$symbolic_places/user-trash-symbolic.${icon_ext}"
+            ((patched++)) || true
+        fi
+
+        # Copiar como user-trash-full-symbolic.<ext>
+        if [[ ! -f "$symbolic_places/user-trash-full-symbolic.${icon_ext}" ]]; then
+            cp -f "$trash_full_source" "$symbolic_places/user-trash-full-symbolic.${icon_ext}"
+            ((patched++)) || true
+        fi
+
+        if [[ "$patched" -gt 0 ]]; then
+            log_info "  $theme_name: $patched ícone(s) de lixeira colorido(s) aplicado(s) em symbolic/places/"
+            total_patched=$((total_patched + patched))
+        fi
+    done
+
+    # Atualizar caches de ícones
+    if [[ "$total_patched" -gt 0 ]]; then
+        log_step "Atualizando caches de ícones..."
+        for theme_dir in "${fluent_dirs[@]}"; do
+            if has_cmd gtk-update-icon-cache; then
+                gtk-update-icon-cache -f -t "$theme_dir" 2>/dev/null || true
+            fi
+        done
+        log_success "Patch da lixeira aplicado: $total_patched ícone(s) em ${#fluent_dirs[@]} tema(s)."
+    else
+        log_warn "Nenhum ícone de lixeira colorido aplicado."
+    fi
+}
+
+# ============================================================================
 #  DETECÇÃO DE TEMAS INSTALADOS
 # ============================================================================
 
@@ -877,32 +1015,22 @@ detect_installed_themes() {
         done
     fi
 
-    # --- Detectar Tema GTK ---
+    # --- Detectar Tema GTK (nomes fixos: Fluent-Dark / Fluent-Light) ---
     DETECTED_GTK_THEME=""
-    if [[ -d "$home_share/themes" ]]; then
-        for gtk_dir in "$home_share/themes"/Fluent*; do
-            [[ -d "$gtk_dir" ]] || continue
-            local gtk_name
-            gtk_name="$(basename "$gtk_dir")"
-
-            # Verificar se é um tema GTK válido
-            if [[ ! -d "$gtk_dir/gtk-3.0" && ! -d "$gtk_dir/gtk-4.0" ]]; then
-                continue
-            fi
-
-            if [[ "$THEME_MODE" == "dark" ]]; then
-                if [[ "$gtk_name" == *"Dark"* || "$gtk_name" == *"dark"* ]]; then
-                    DETECTED_GTK_THEME="$gtk_name"
-                    break
-                fi
-            else
-                if [[ "$gtk_name" != *"Dark"* && "$gtk_name" != *"dark"* ]]; then
-                    DETECTED_GTK_THEME="$gtk_name"
-                    break
-                fi
-            fi
-        done
+    if [[ "$THEME_MODE" == "dark" ]]; then
+        if [[ -d "$home_share/themes/Fluent-Dark" ]]; then
+            DETECTED_GTK_THEME="Fluent-Dark"
+        elif [[ -d "$home_share/themes/Fluent-dark" ]]; then
+            DETECTED_GTK_THEME="Fluent-dark"
+        fi
+    else
+        if [[ -d "$home_share/themes/Fluent-Light" ]]; then
+            DETECTED_GTK_THEME="Fluent-Light"
+        elif [[ -d "$home_share/themes/Fluent-light" ]]; then
+            DETECTED_GTK_THEME="Fluent-light"
+        fi
     fi
+    # Fallback: buscar qualquer Fluent* com gtk
     if [[ -z "$DETECTED_GTK_THEME" && -d "$home_share/themes" ]]; then
         for gtk_dir in "$home_share/themes"/Fluent*; do
             [[ -d "$gtk_dir" ]] || continue
@@ -913,11 +1041,53 @@ detect_installed_themes() {
         done
     fi
 
+    # --- Detectar Tema Aurorae ---
+    DETECTED_AURORAE_THEME=""
+    local aurorae_base="$HOME/.local/share/aurorae/themes"
+    if [[ -d "$aurorae_base" ]]; then
+        if [[ "$THEME_MODE" == "dark" ]]; then
+            for aur_dir in "$aurorae_base"/Fluent*; do
+                [[ -d "$aur_dir" ]] || continue
+                local aur_name
+                aur_name="$(basename "$aur_dir")"
+                if [[ "$aur_name" == *"dark"* || "$aur_name" == *"Dark"* ]]; then
+                    DETECTED_AURORAE_THEME="$aur_name"
+                    break
+                fi
+            done
+        else
+            for aur_dir in "$aurorae_base"/Fluent*; do
+                [[ -d "$aur_dir" ]] || continue
+                local aur_name
+                aur_name="$(basename "$aur_dir")"
+                if [[ "$aur_name" != *"dark"* && "$aur_name" != *"Dark"* ]]; then
+                    DETECTED_AURORAE_THEME="$aur_name"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # --- Detectar Wallpaper big-retro ---
+    DETECTED_WALLPAPER_FILE=""
+    if [[ -d "$WALLPAPER_SOURCE" ]]; then
+        for ext in "${WALLPAPER_EXTENSIONS[@]}"; do
+            local ext_upper="${ext^^}"
+            for img_file in "$WALLPAPER_SOURCE"/*"$ext" "$WALLPAPER_SOURCE"/*"$ext_upper"; do
+                [[ -f "$img_file" ]] || continue
+                DETECTED_WALLPAPER_FILE="$img_file"
+                break 2
+            done
+        done
+    fi
+
     # Log dos resultados
     log_info "  Esquema de cores:  ${DETECTED_COLOR_SCHEME:-${C_RED}não detectado${C_RESET}}"
     log_info "  Tema de ícones:    ${DETECTED_ICON_THEME:-${C_RED}não detectado${C_RESET}}"
     log_info "  Tema Kvantum:      ${DETECTED_KVANTUM_THEME:-${C_RED}não detectado${C_RESET}}"
     log_info "  Tema GTK:          ${DETECTED_GTK_THEME:-${C_RED}não detectado${C_RESET}}"
+    log_info "  Tema Aurorae:      ${DETECTED_AURORAE_THEME:-${C_RED}não detectado${C_RESET}}"
+    log_info "  Wallpaper:         ${DETECTED_WALLPAPER_FILE:-${C_RED}não detectado${C_RESET}}"
 }
 
 # ============================================================================
@@ -1035,6 +1205,121 @@ theme=${DETECTED_KVANTUM_THEME}
 EOF
     }
     log_success "Tema Kvantum aplicado: $DETECTED_KVANTUM_THEME"
+}
+
+apply_aurorae_theme() {
+    log_arrow "Aplicando tema Aurorae (decoração de janelas)..."
+
+    if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
+        log_warn "Nenhum tema Aurorae Fluent detectado."
+        log_info "O tema KDE pode ter instalado um tema Aurorae separadamente."
+        return 0
+    fi
+
+    # Definir tema de decoração de janelas via kwinrc
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$DETECTED_AURORAE_THEME"
+
+    log_success "Tema Aurorae aplicado: $DETECTED_AURORAE_THEME"
+
+    # Recarregar kwin para aplicar imediatamente (se disponível)
+    if has_cmd qdbus6; then
+        qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null || true
+    elif has_cmd qdbus; then
+        qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null || true
+    fi
+}
+
+apply_wallpaper() {
+    log_arrow "Aplicando wallpaper big-retro..."
+
+    if [[ -z "$DETECTED_WALLPAPER_FILE" ]]; then
+        log_warn "Wallpaper big-retro não encontrado em $WALLPAPER_SOURCE"
+        log_info "Extensões procuradas: ${WALLPAPER_EXTENSIONS[*]}"
+        log_info "O wallpaper não será alterado."
+        return 0
+    fi
+
+    local wp_file="$DETECTED_WALLPAPER_FILE"
+    local wp_filename
+    wp_filename="$(basename "$wp_file")"
+
+    # Copiar wallpaper para o diretório do usuário se ainda não estiver lá
+    local user_wallpaper_dir="$HOME/.local/share/wallpapers/big-retro"
+    if [[ ! -d "$user_wallpaper_dir" ]]; then
+        mkdir -p "$user_wallpaper_dir"
+    fi
+
+    # Copiar a imagem e os metadados
+    if [[ ! -f "$user_wallpaper_dir/$wp_filename" ]]; then
+        cp -f "$wp_file" "$user_wallpaper_dir/"
+        log_info "Wallpaper copiado para $user_wallpaper_dir/"
+    fi
+
+    # Copiar arquivo de metadados do wallpaper (metadata.desktop ou contents.json)
+    for meta_file in "$WALLPAPER_SOURCE"/metadata.desktop "$WALLPAPER_SOURCE"/contents.json; do
+        if [[ -f "$meta_file" ]]; then
+            cp -f "$meta_file" "$user_wallpaper_dir/"
+        fi
+    done
+
+    # Criar metadata.desktop se não existir (Plasma precisa para detectar o wallpaper)
+    if [[ ! -f "$user_wallpaper_dir/metadata.desktop" && ! -f "$user_wallpaper_dir/contents.json" ]]; then
+        local wp_name="big-retro"
+        # Detectar nome sem extensão para usar como Image=
+        local wp_image_noext
+        wp_image_noext="${wp_filename%.*}"
+        cat > "$user_wallpaper_dir/metadata.desktop" <<METAEOF
+[Desktop Entry]
+Name=big-retro
+Comment=BigLinux Retro Wallpaper
+
+X-KDE-PluginInfo-Name=big-retro
+X-KDE-PluginInfo-Author=BigLinux
+X-KDE-PluginInfo-Category=
+X-KDE-PluginInfo-Depends=
+X-KDE-PluginInfo-Email=
+X-KDE-PluginInfo-EnabledByDefault=true
+X-KDE-PluginInfo-License=LGPLv2+
+X-KDE-PluginInfo-Version=1.0
+X-KDE-PluginInfo-Website=
+
+[Wallpaper]
+Image=file://$user_wallpaper_dir/$wp_filename
+METAEOF
+        log_info "metadata.desktop criado para o wallpaper."
+    fi
+
+    # Construir caminho de imagem absoluto com file://
+    local wp_uri
+    wp_uri="$(realpath "$user_wallpaper_dir/$wp_filename" 2>/dev/null || echo "$user_wallpaper_dir/$wp_filename")"
+    # Normalizar para file:// URI
+    if [[ "$wp_uri" != file://* ]]; then
+        wp_uri="file://$wp_uri"
+    fi
+
+    # Aplicar wallpaper via plasma-apply-wallpaperimage (preferido no Plasma 6)
+    if has_cmd plasma-apply-wallpaperimage; then
+        if plasma-apply-wallpaperimage "$user_wallpaper_dir/$wp_filename" 2>/dev/null; then
+            log_success "Wallpaper aplicado via plasma-apply-wallpaperimage: $wp_filename"
+            return 0
+        fi
+    fi
+
+    # Fallback: aplicar via kwriteconfig6 (plasmarc)
+    kwriteconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image "$wp_uri"
+    kwriteconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image "$user_wallpaper_dir/$wp_filename"
+
+    # Também configurar via kwriteconfig6 no formato que o Plasma usa para wallpapers de usuário
+    kwriteconfig6 --file plasma-org.kde.plasma.desktop-appletsrc --group ContainmentActions --key "big-retro" "$user_wallpaper_dir/$wp_filename"
+
+    # Aplicar via D-Bus como último recurso
+    if has_cmd qdbus6; then
+        qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+            "var allDesktops = desktops(); for (i=0;i<allDesktops.length;i++) { d = allDesktops[i]; d.wallpaperPlugin = 'org.kde.image'; d.currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General'); d.writeConfig('Image', '$wp_uri'); }" 2>/dev/null || true
+    fi
+
+    log_success "Wallpaper big-retro aplicado: $wp_filename"
 }
 
 # ============================================================================
@@ -1234,6 +1519,27 @@ show_status() {
     fi
     printf '  %bÍcones BigLinux (big*):%b  %d disponíveis, %d aplicados\n' "$C_BOLD" "$C_RESET" "$bigicons_count" "$patched_count"
 
+    # Trash icon patch
+    local trash_patched=0
+    if [[ -d "$HOME/.local/share/icons" ]]; then
+        trash_patched="$(find "$HOME/.local/share/icons/Fluent"*/symbolic/places -type f -name 'user-trash*-symbolic.*' 2>/dev/null | wc -l)"
+    fi
+    printf '  %bLixeira colorida (patch):%b %d ícone(s)\n' "$C_BOLD" "$C_RESET" "$trash_patched"
+
+    # Aurorae
+    local current_aurorae
+    current_aurorae="$(kreadconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme 2>/dev/null | tr -d '[:space:]')"
+    local aurorae_indicator="$E_CROSS"
+    [[ "$current_aurorae" == *"Fluent"* || "$current_aurorae" == *"fluent"* ]] && aurorae_indicator="$E_CHECK"
+    printf '  %bDecoração Aurorae:%b       %s  %s\n' "$C_BOLD" "$C_RESET" "${current_aurorae:-não definido}" "$aurorae_indicator"
+
+    # Wallpaper
+    local current_wp
+    current_wp="$(kreadconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image 2>/dev/null | tr -d '[:space:]')"
+    local wp_indicator="$E_CROSS"
+    [[ "$current_wp" == *"big-retro"* ]] && wp_indicator="$E_CHECK"
+    printf '  %bWallpaper:%b              %s  %s\n' "$C_BOLD" "$C_RESET" "$( [[ -n "$current_wp" ]] && echo "$(basename "${current_wp#file://}" 2>/dev/null)" || echo "não definido" )" "$wp_indicator"
+
     # Backup
     printf '\n'
     if [[ -d "$BACKUP_BASE" ]]; then
@@ -1285,8 +1591,10 @@ ask_components() {
     printf '    %b[1]%b  Tema KDE Plasma              %b[ON]%b\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
     printf '    %b[2]%b  Tema GTK (libadwaita)        %b[ON]%b\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
     printf '    %b[3]%b  Ícones Fluent + Patch Big    %b[ON]%b\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
-    printf '    %b[4]%b  Estilo Kvantum               %b[ON]%b\n\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
-    printf '    %b[5]%b  ── Tudo (Full) ──\n\n' "$C_YELLOW" "$C_RESET"
+    printf '    %b[4]%b  Estilo Kvantum               %b[ON]%b\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
+    printf '    %b[5]%b  Decoração Aurorae            %b[ON]%b\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
+    printf '    %b[6]%b  Wallpaper big-retro          %b[ON]%b\n\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET"
+    printf '    %b[F]%b  ── Tudo (Full) ──\n\n' "$C_YELLOW" "$C_RESET"
     printf '    %b[0]%b  Cancelar\n\n' "$C_RED" "$C_RESET"
 
     prompt "Sua escolha"
@@ -1297,11 +1605,15 @@ ask_components() {
         2) APPLY_GTK=true ;;
         3) APPLY_ICONS=true ;;
         4) APPLY_KVANTUM=true ;;
-        5)
+        5) APPLY_AURORAE=true ;;
+        6) APPLY_WALLPAPER=true ;;
+        [Ff])
             APPLY_KDE=true
             APPLY_GTK=true
             APPLY_ICONS=true
             APPLY_KVANTUM=true
+            APPLY_AURORAE=true
+            APPLY_WALLPAPER=true
             ;;
         *)
             log_warn "Opção inválida. Usando padrão (tudo)."
@@ -1309,6 +1621,8 @@ ask_components() {
             APPLY_GTK=true
             APPLY_ICONS=true
             APPLY_KVANTUM=true
+            APPLY_AURORAE=true
+            APPLY_WALLPAPER=true
             ;;
     esac
 }
@@ -1352,6 +1666,8 @@ interactive_menu() {
     printf '  Ícones Fluent:   %s\n' "$( [[ "$APPLY_ICONS" == true ]] && echo "$E_CHECK Sim" || echo "$E_CROSS Não" )"
     printf '  Patch BigIcons:  %s\n' "$( [[ "$APPLY_PATCH" == true ]] && echo "$E_CHECK Sim" || echo "$E_CROSS Não" )"
     printf '  Estilo Kvantum:  %s\n' "$( [[ "$APPLY_KVANTUM" == true ]] && echo "$E_CHECK Sim" || echo "$E_CROSS Não" )"
+    printf '  Decoração Aurorae: %s\n' "$( [[ "$APPLY_AURORAE" == true ]] && echo "$E_CHECK Sim" || echo "$E_CROSS Não" )"
+    printf '  Wallpaper big-retro: %s\n' "$( [[ "$APPLY_WALLPAPER" == true ]] && echo "$E_CHECK Sim" || echo "$E_CROSS Não" )"
     printf '  ─────────────────────────────────────\n\n'
 
     if ! confirm "Confirmar instalação?"; then
@@ -1406,6 +1722,10 @@ run_installation() {
             printf '\n'
             patch_bigicons || true
         fi
+
+        # Aplicar patch ícone lixeira colorido
+        printf '\n'
+        patch_trash_icons || true
     fi
 
     # 3. Detectar temas instalados
@@ -1433,6 +1753,16 @@ run_installation() {
         apply_kvantum_theme || true
     fi
 
+    if [[ "$APPLY_AURORAE" == true ]]; then
+        printf '\n'
+        apply_aurorae_theme || true
+    fi
+
+    if [[ "$APPLY_WALLPAPER" == true ]]; then
+        printf '\n'
+        apply_wallpaper || true
+    fi
+
     # 5. Recarregar Plasma
     if is_plasma; then
         printf '\n'
@@ -1457,6 +1787,43 @@ run_installation() {
     if [[ "$install_errors" -gt 0 ]]; then
         log_warn "Revise os logs em: $WORK_DIR/"
     fi
+
+    # 7. Perguntar sobre logoff
+    printf '\n'
+    log_info "Algumas mudanças exigem um novo login para serem aplicadas completamente."
+    printf '\n'
+    printf '  %bDeseja fazer logoff agora?%b\n\n' "$C_BOLD" "$C_RESET"
+    printf '    %b[1]%b  Sim, fazer logoff agora\n' "$C_CYAN" "$C_RESET"
+    printf '    %b[2]%b  Não, farei manualmente depois\n\n' "$C_CYAN" "$C_RESET"
+
+    prompt "Sua escolha" "1"
+    case "$REPLY" in
+        1)
+            log_arrow "Fazendo logoff em 5 segundos..."
+            log_info "Salve seus trabalhos abertos!"
+            if has_cmd loginctl; then
+                loginctl terminate-user "$(whoami)" &>/dev/null &
+            elif has_cmd qdbus6; then
+                qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null &
+            elif has_cmd dbus-send; then
+                dbus-send --session --dest=org.kde.Shutdown --type=method_call \
+                    /Shutdown org.kde.Shutdown.logout 2>/dev/null &
+            else
+                log_warn "Não foi possível iniciar o logoff automaticamente."
+                log_info "Por favor, faça logoff manualmente."
+            fi
+            # Esperar um pouco para a mensagem ser lida
+            sleep 3
+            # Fallback: kill sessão X/Wayland
+            if has_cmd loginctl; then
+                loginctl terminate-user "$(whoami)" 2>/dev/null
+            fi
+            ;;
+        2|*)
+            log_info "Tudo pronto! Faça logoff quando desejar para completar as mudanças."
+            ;;
+    esac
+    printf '\n'
 }
 
 # ============================================================================
@@ -1472,6 +1839,8 @@ parse_args() {
                 APPLY_GTK=true
                 APPLY_ICONS=true
                 APPLY_KVANTUM=true
+                APPLY_AURORAE=true
+                APPLY_WALLPAPER=true
                 shift
                 ;;
             --kde)
@@ -1488,6 +1857,14 @@ parse_args() {
                 ;;
             --kvantum)
                 APPLY_KVANTUM=true
+                shift
+                ;;
+            --aurorae)
+                APPLY_AURORAE=true
+                shift
+                ;;
+            --wallpaper)
+                APPLY_WALLPAPER=true
                 shift
                 ;;
             --dark)
@@ -1554,6 +1931,7 @@ validate_args() {
     # mostrar erro
     if [[ "$APPLY_KDE" == false && "$APPLY_GTK" == false && \
           "$APPLY_ICONS" == false && "$APPLY_KVANTUM" == false && \
+          "$APPLY_AURORAE" == false && "$APPLY_WALLPAPER" == false && \
           "$FULL_MODE" == false ]]; then
         return 1  # Entrará no modo interativo
     fi
