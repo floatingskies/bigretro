@@ -32,12 +32,14 @@ set -euo pipefail
 #  CONSTANTES E VERSÃO
 # ============================================================================
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly BACKUP_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/bigretro-backup"
 readonly TEMP_BASE="/tmp/bigretro-$(id -u)"
 readonly BIGICONS_SOURCE="/usr/share/icons/bigicons-papient"
 readonly WALLPAPER_SOURCE="/usr/share/wallpapers/big-retro"
+# Wallpapers também podem ser um arquivo diretamente em /usr/share/wallpapers/
+readonly WALLPAPER_SEARCH_DIR="/usr/share/wallpapers"
 readonly WALLPAPER_EXTENSIONS=(".jpg" ".jpeg" ".png" ".heic")
 
 # Repositórios oficiais do vinceliuice no GitHub
@@ -1020,9 +1022,14 @@ detect_installed_themes() {
         DETECTED_KVANTUM_THEME="$(basename "${kv_fb:-}" 2>/dev/null)"
     fi
 
-    # --- Detectar Tema GTK (case-insensitive) ---
+    # --- Detectar Tema GTK (case-insensitive, busca em ~/.themes e ~/.local/share/themes) ---
     DETECTED_GTK_THEME=""
-    if [[ -d "$home_share/themes" ]]; then
+    local gtk_search_paths=("$HOME/.themes" "$home_share/themes")
+
+    for gtk_base in "${gtk_search_paths[@]}"; do
+        [[ -z "$DETECTED_GTK_THEME" ]] || break
+        [[ -d "$gtk_base" ]] || continue
+
         local gtk_lower_mode="$THEME_MODE"
         [[ -n "$gtk_lower_mode" ]] && gtk_lower_mode="$(echo "$gtk_lower_mode" | tr '[:upper:]' '[:lower:]')"
 
@@ -1032,36 +1039,84 @@ detect_installed_themes() {
             local gtk_name_lower
             gtk_name_lower="$(echo "$gtk_name" | tr '[:upper:]' '[:lower:]')"
 
-            # Verificar se é um tema GTK válido
-            [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" ]] || continue
+            # Verificar se é um tema GTK válido (tem gtk-3.0 ou gtk-4.0 ou gtk-2.0)
+            [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" || -d "$gtk_dir/gtk-2.0" ]] || continue
 
+            # Mapear nomes conhecidos: Fluent-Dark, Fluent-Light, Fluent, etc.
             if [[ "$gtk_lower_mode" == "dark" ]]; then
-                if [[ "$gtk_name_lower" == *"dark"* ]]; then
+                # Prioridade: nomes com "Dark" exato, depois qualquer com "dark"
+                if [[ "$gtk_name_lower" == "fluent-dark" ]]; then
                     DETECTED_GTK_THEME="$gtk_name"
-                    break
+                    break 2
+                elif [[ "$gtk_name_lower" == *"dark"* ]]; then
+                    DETECTED_GTK_THEME="$gtk_name"
+                    break 2
                 fi
             else
-                if [[ "$gtk_name_lower" != *"dark"* ]]; then
+                # Prioridade: nomes com "Light" exato, depois sem "dark"
+                if [[ "$gtk_name_lower" == "fluent-light" ]]; then
                     DETECTED_GTK_THEME="$gtk_name"
-                    break
+                    break 2
+                elif [[ "$gtk_name_lower" != *"dark"* ]]; then
+                    DETECTED_GTK_THEME="$gtk_name"
+                    break 2
                 fi
             fi
-        done < <(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
+        done < <(find "$gtk_base" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
+    done
+
+    # Fallback 1: qualquer Fluent* com subdiretório gtk em ~/.themes
+    if [[ -z "$DETECTED_GTK_THEME" && -d "$HOME/.themes" ]]; then
+        while IFS= read -r -d '' gtk_dir; do
+            if [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" || -d "$gtk_dir/gtk-2.0" ]]; then
+                DETECTED_GTK_THEME="$(basename "$gtk_dir")"
+                break
+            fi
+        done < <(find "$HOME/.themes" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
-    # Fallback: qualquer Fluent* com gtk
+
+    # Fallback 2: qualquer Fluent* com subdiretório gtk em ~/.local/share/themes
     if [[ -z "$DETECTED_GTK_THEME" && -d "$home_share/themes" ]]; then
         while IFS= read -r -d '' gtk_dir; do
-            if [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" ]]; then
+            if [[ -d "$gtk_dir/gtk-3.0" || -d "$gtk_dir/gtk-4.0" || -d "$gtk_dir/gtk-2.0" ]]; then
                 DETECTED_GTK_THEME="$(basename "$gtk_dir")"
                 break
             fi
         done < <(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
     fi
 
-    # --- Detectar Tema Aurorae (case-insensitive) ---
+    # Fallback 3: buscar recursivamente (temas instalados pelo script do vinceliuice)
+    if [[ -z "$DETECTED_GTK_THEME" ]]; then
+        for gtk_base in "${gtk_search_paths[@]}"; do
+            [[ -d "$gtk_base" ]] || continue
+            local found_gtk
+            found_gtk="$(find "$gtk_base" -maxdepth 2 -type d \( -name 'gtk-3.0' -o -name 'gtk-4.0' \) -print -quit 2>/dev/null)"
+            if [[ -n "$found_gtk" ]]; then
+                local parent_dir
+                parent_dir="$(dirname "$found_gtk")"
+                local parent_name
+                parent_name="$(basename "$parent_dir")"
+                local parent_name_lower
+                parent_name_lower="$(echo "$parent_name" | tr '[:upper:]' '[:lower:]')"
+                if [[ "$parent_name_lower" == *"fluent"* ]]; then
+                    DETECTED_GTK_THEME="$parent_name"
+                    break
+                fi
+            fi
+        done
+    fi
+
+    # --- Detectar Tema Aurorae (case-insensitive, múltiplos caminhos) ---
     DETECTED_AURORAE_THEME=""
-    local aurorae_base="$HOME/.local/share/aurorae/themes"
-    if [[ -d "$aurorae_base" ]]; then
+    local aurorae_search_paths=(
+        "$HOME/.local/share/aurorae/themes"
+        "/usr/share/aurorae/themes"
+    )
+
+    for aurorae_base in "${aurorae_search_paths[@]}"; do
+        [[ -z "$DETECTED_AURORAE_THEME" ]] || break
+        [[ -d "$aurorae_base" ]] || continue
+
         local aur_lower_mode="$THEME_MODE"
         [[ -n "$aur_lower_mode" ]] && aur_lower_mode="$(echo "$aur_lower_mode" | tr '[:upper:]' '[:lower:]')"
 
@@ -1071,36 +1126,108 @@ detect_installed_themes() {
             local aur_name_lower
             aur_name_lower="$(echo "$aur_name" | tr '[:upper:]' '[:lower:]')"
 
+            # Verificar se é um tema Aurorae válido (tem metadata.desktop ou arquivo rc)
+            [[ -f "$aur_dir/metadata.desktop" || -f "$aur_dir"/decor*.rc || -d "$aur_dir" ]] || continue
+
             if [[ "$aur_lower_mode" == "dark" ]]; then
-                if [[ "$aur_name_lower" == *"dark"* ]]; then
+                # Prioridade: Fluent-Dark exato, depois qualquer com dark
+                if [[ "$aur_name_lower" == "fluent-dark" || "$aur_name_lower" == "fluentdark" ]]; then
                     DETECTED_AURORAE_THEME="$aur_name"
-                    break
+                    break 2
+                elif [[ "$aur_name_lower" == *"dark"* ]]; then
+                    DETECTED_AURORAE_THEME="$aur_name"
+                    break 2
                 fi
             else
-                if [[ "$aur_name_lower" != *"dark"* ]]; then
+                # Prioridade: Fluent-Light exato, depois sem dark
+                if [[ "$aur_name_lower" == "fluent-light" || "$aur_name_lower" == "fluentlight" ]]; then
                     DETECTED_AURORAE_THEME="$aur_name"
-                    break
+                    break 2
+                elif [[ "$aur_name_lower" != *"dark"* ]]; then
+                    DETECTED_AURORAE_THEME="$aur_name"
+                    break 2
                 fi
             fi
         done < <(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -print0 2>/dev/null | sort -z)
-    fi
-    # Fallback: qualquer Fluent* em aurorae
-    if [[ -z "$DETECTED_AURORAE_THEME" && -d "$aurorae_base" ]]; then
-        DETECTED_AURORAE_THEME="$(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
-        DETECTED_AURORAE_THEME="$(basename "${DETECTED_AURORAE_THEME:-}" 2>/dev/null)"
-    fi
+    done
 
-    # --- Detectar Wallpaper big-retro (case-insensitive, any nesting) ---
-    DETECTED_WALLPAPER_FILE=""
-    if [[ -d "$WALLPAPER_SOURCE" ]]; then
-        for ext in jpg jpeg png heic JPG JPEG PNG HEIC; do
-            local found
-            found="$(find "$WALLPAPER_SOURCE" -maxdepth 3 -type f \( -iname "*.$ext" \) -print -quit 2>/dev/null)"
-            if [[ -n "$found" && -f "$found" ]]; then
-                DETECTED_WALLPAPER_FILE="$found"
+    # Fallback: qualquer Fluent* em qualquer caminho aurorae
+    if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
+        for aurorae_base in "${aurorae_search_paths[@]}"; do
+            [[ -d "$aurorae_base" ]] || continue
+            local aur_fb
+            aur_fb="$(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -print -quit 2>/dev/null)"
+            if [[ -n "$aur_fb" ]]; then
+                DETECTED_AURORAE_THEME="$(basename "$aur_fb" 2>/dev/null)"
                 break
             fi
         done
+    fi
+
+    # Fallback: buscar recursivamente (busca mais profunda)
+    if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
+        for aurorae_base in "${aurorae_search_paths[@]}"; do
+            [[ -d "$aurorae_base" ]] || continue
+            local aur_deep
+            aur_deep="$(find "$aurorae_base" -maxdepth 2 -type d -iname '*Fluent*' -print -quit 2>/dev/null)"
+            if [[ -n "$aur_deep" ]]; then
+                DETECTED_AURORAE_THEME="$(basename "$aur_deep" 2>/dev/null)"
+                break
+            fi
+        done
+    fi
+
+    # --- Detectar Wallpaper big-retro (case-insensitive, arquivo ou diretório) ---
+    DETECTED_WALLPAPER_FILE=""
+
+    # Caso 1: big-retro é um arquivo direto (ex: /usr/share/wallpapers/big-retro.jpg)
+    for ext in jpg jpeg png heic; do
+        local wp_candidate
+        wp_candidate="${WALLPAPER_SOURCE}.${ext}"
+        if [[ -f "$wp_candidate" ]]; then
+            DETECTED_WALLPAPER_FILE="$wp_candidate"
+            break
+        fi
+        # Também tentar com case diferente
+        wp_candidate="${WALLPAPER_SOURCE}.$(echo "$ext" | tr '[:lower:]' '[:upper:]')"
+        if [[ -f "$wp_candidate" ]]; then
+            DETECTED_WALLPAPER_FILE="$wp_candidate"
+            break
+        fi
+    done
+
+    # Caso 2: big-retro é um diretório com imagens dentro
+    if [[ -z "$DETECTED_WALLPAPER_FILE" && -d "$WALLPAPER_SOURCE" ]]; then
+        local found
+        found="$(find "$WALLPAPER_SOURCE" -maxdepth 3 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) -print -quit 2>/dev/null)"
+        if [[ -n "$found" && -f "$found" ]]; then
+            DETECTED_WALLPAPER_FILE="$found"
+        fi
+    fi
+
+    # Caso 3: Procurar qualquer arquivo big-retro* em /usr/share/wallpapers/ (case-insensitive)
+    if [[ -z "$DETECTED_WALLPAPER_FILE" && -d "$WALLPAPER_SEARCH_DIR" ]]; then
+        local found_wild
+        found_wild="$(find "$WALLPAPER_SEARCH_DIR" -maxdepth 1 -type f -iname 'big-retro.*' -print -quit 2>/dev/null)"
+        if [[ -n "$found_wild" && -f "$found_wild" ]]; then
+            DETECTED_WALLPAPER_FILE="$found_wild"
+        fi
+        # Também procurar dentro de subdiretórios big-retro/
+        if [[ -z "$DETECTED_WALLPAPER_FILE" ]]; then
+            found_wild="$(find "$WALLPAPER_SEARCH_DIR" -maxdepth 2 -type f -iname 'big-retro*' \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) -print -quit 2>/dev/null)"
+            if [[ -n "$found_wild" && -f "$found_wild" ]]; then
+                DETECTED_WALLPAPER_FILE="$found_wild"
+            fi
+        fi
+    fi
+
+    # Caso 4: Procurar qualquer arquivo com "big" + "retro" no nome
+    if [[ -z "$DETECTED_WALLPAPER_FILE" && -d "$WALLPAPER_SEARCH_DIR" ]]; then
+        local found_generic
+        found_generic="$(find "$WALLPAPER_SEARCH_DIR" -maxdepth 3 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) -iname '*big*retro*' -print -quit 2>/dev/null)"
+        if [[ -n "$found_generic" && -f "$found_generic" ]]; then
+            DETECTED_WALLPAPER_FILE="$found_generic"
+        fi
     fi
 
     # Log dos resultados
@@ -1119,16 +1246,38 @@ detect_installed_themes() {
 
     if [[ "$_debug_missing" == true ]]; then
         log_info "  [Debug] Conteúdo real dos diretórios:"
+        # GTK em ~/.themes
+        if [[ -d "$HOME/.themes" ]]; then
+            log_info "    ~/.themes/          $(find "$HOME/.themes" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+        else
+            log_info "    ~/.themes/          ${C_DIM}diretório não existe${C_RESET}"
+        fi
+        # GTK em ~/.local/share/themes
         if [[ -d "$home_share/themes" ]]; then
-            log_info "    themes/         $(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+            log_info "    ~/.local/share/themes/  $(find "$home_share/themes" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+        else
+            log_info "    ~/.local/share/themes/  ${C_DIM}diretório não existe${C_RESET}"
         fi
-        if [[ -d "$aurorae_base" ]]; then
-            log_info "    aurorae/        $(find "$aurorae_base" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
-        fi
-        if [[ -d "$WALLPAPER_SOURCE" ]]; then
+        # Aurorae em todos os caminhos
+        for _aur_dbg in "${aurorae_search_paths[@]}"; do
+            if [[ -d "$_aur_dbg" ]]; then
+                log_info "    $_aur_dbg/  $(find "$_aur_dbg" -maxdepth 1 -type d -iname 'Fluent*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+            else
+                log_info "    $_aur_dbg/  ${C_DIM}diretório não existe${C_RESET}"
+            fi
+        done
+        # Wallpaper
+        if [[ -f "$WALLPAPER_SOURCE" ]]; then
+            log_info "    wallpaper (arquivo)  $WALLPAPER_SOURCE ${C_GREEN}existe como arquivo${C_RESET}"
+        elif [[ -d "$WALLPAPER_SOURCE" ]]; then
             log_info "    wallpaper/      $(find "$WALLPAPER_SOURCE" -maxdepth 3 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
         else
-            log_info "    wallpaper/      ${C_RED}diretório $WALLPAPER_SOURCE não existe${C_RESET}"
+            log_info "    wallpaper/      ${C_YELLOW}caminho $WALLPAPER_SOURCE não existe (nem como arquivo nem como diretório)${C_RESET}"
+            # Listar wallpapers disponíveis para diagnóstico
+            if [[ -d "$WALLPAPER_SEARCH_DIR" ]]; then
+                log_info "    wallpapers disponíveis: $(find "$WALLPAPER_SEARCH_DIR" -maxdepth 1 -type f -iname '*big*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+                log_info "    subdirs big*: $(find "$WALLPAPER_SEARCH_DIR" -maxdepth 1 -type d -iname '*big*' -exec basename {} \; 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+            fi
         fi
     fi
 }
@@ -1166,6 +1315,8 @@ apply_gtk_theme() {
 
     if [[ -z "$DETECTED_GTK_THEME" ]]; then
         log_warn "Nenhum tema GTK Fluent detectado para aplicar."
+        log_info "Verifique se o tema GTK foi instalado corretamente."
+        log_info "Caminhos verificados: ~/.themes/ e ~/.local/share/themes/"
         return 1
     fi
 
@@ -1173,6 +1324,24 @@ apply_gtk_theme() {
     local gtk_dark=0
     if [[ "$THEME_MODE" == "dark" ]]; then
         gtk_dark=1
+    fi
+
+    # Determinar onde o tema GTK está instalado para referência
+    local gtk_theme_path=""
+    for _gtk_check in "$HOME/.themes/$DETECTED_GTK_THEME" "$HOME/.local/share/themes/$DETECTED_GTK_THEME"; do
+        if [[ -d "$_gtk_check" ]]; then
+            gtk_theme_path="$_gtk_check"
+            break
+        fi
+    done
+
+    # Tenta determinar o caminho real (case-insensitive)
+    if [[ -z "$gtk_theme_path" ]]; then
+        for _gtk_base in "$HOME/.themes" "$HOME/.local/share/themes"; do
+            [[ -d "$_gtk_base" ]] || continue
+            gtk_theme_path="$(find "$_gtk_base" -maxdepth 1 -type d -iname "${DETECTED_GTK_THEME}" -print -quit 2>/dev/null)"
+            [[ -n "$gtk_theme_path" ]] && break
+        done
     fi
 
     # --- GTK3 ---
@@ -1208,6 +1377,14 @@ ENVEOF
     chmod +x "$HOME/.config/plasma-workspace/env/gtk-theme.sh"
     log_info "Variável de ambiente GTK configurada para Plasma"
 
+    # --- GTK2 (gtkrc-2.0) ---
+    cat > "$HOME/.config/gtkrc-2.0" <<EOF
+# Configurado automaticamente pelo bigretro
+gtk-theme-name="${DETECTED_GTK_THEME}"
+gtk-icon-theme-name="${icon_theme}"
+EOF
+    log_info "GTK2 configurado: $DETECTED_GTK_THEME"
+
     # --- xsettingsd (usado por alguns ambientes) ---
     if has_cmd xsettingsd; then
         mkdir -p "$HOME/.config/xsettingsd"
@@ -1216,6 +1393,49 @@ Net/ThemeName "${DETECTED_GTK_THEME}"
 Net/IconThemeName "${icon_theme}"
 EOF
         log_info "xsettingsd configurado."
+    fi
+
+    # --- Configuração adicional para Flatpak ---
+    if has_cmd flatpak; then
+        local flatpak_gtk_dir="$HOME/.var/app/"
+        if [[ -d "$flatpak_gtk_dir" ]]; then
+            local _fp_count=0
+            while IFS= read -r -d '' _fp_app; do
+                local _fp_gtk3="$_fp_app/config/gtk-3.0"
+                local _fp_gtk4="$_fp_app/config/gtk-4.0"
+                mkdir -p "$_fp_gtk3" "$_fp_gtk4"
+                cat > "$_fp_gtk3/settings.ini" <<EOF
+[Settings]
+gtk-theme-name=${DETECTED_GTK_THEME}
+gtk-icon-theme-name=${icon_theme}
+gtk-application-prefer-dark-theme=${gtk_dark}
+EOF
+                cat > "$_fp_gtk4/settings.ini" <<EOF
+[Settings]
+gtk-theme-name=${DETECTED_GTK_THEME}
+gtk-icon-theme-name=${icon_theme}
+gtk-application-prefer-dark-theme=${gtk_dark}
+EOF
+                ((_fp_count++)) || true
+            done < <(find "$flatpak_gtk_dir" -maxdepth 1 -type d -print0 2>/dev/null)
+            if [[ "$_fp_count" -gt 0 ]]; then
+                log_info "Configuração GTK aplicada em $_fp_count app(s) Flatpak."
+            fi
+        fi
+    fi
+
+    # --- Garantir que o XDG_DATA_DIRS inclui ~/.local/share (para GTK descobrir temas) ---
+    if [[ -f "$HOME/.config/plasma-workspace/env/set-theme.sh" ]]; then
+        : # já existe
+    else
+        mkdir -p "$HOME/.config/plasma-workspace/env"
+        cat > "$HOME/.config/plasma-workspace/env/set-theme.sh" <<'SETEOF'
+#!/bin/sh
+# Garante que GTK encontre temas instalados pelo usuário
+export XDG_DATA_DIRS="$HOME/.local/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+SETEOF
+        chmod +x "$HOME/.config/plasma-workspace/env/set-theme.sh"
+        log_info "XDG_DATA_DIRS configurado para descoberta de temas GTK."
     fi
 }
 
@@ -1251,25 +1471,60 @@ EOF
 }
 
 apply_aurorae_theme() {
-    log_arrow "Aplicando tema Aurorae (decoração de janelas)..."
+    log_arrow "Aplicando tema Aurorae (decoracao de janelas)..."
 
     if [[ -z "$DETECTED_AURORAE_THEME" ]]; then
         log_warn "Nenhum tema Aurorae Fluent detectado."
         log_info "O tema KDE pode ter instalado um tema Aurorae separadamente."
+        log_info "Caminhos verificados:"
+        log_info "  ~/.local/share/aurorae/themes/"
+        log_info "  /usr/share/aurorae/themes/"
         return 0
     fi
 
-    # Definir tema de decoração de janelas via kwinrc
+    # Verificar se o tema realmente existe (case-insensitive)
+    local aurorae_found_path=""
+    for aurorae_base in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
+        [[ -d "$aurorae_base" ]] || continue
+        aurorae_found_path="$(find "$aurorae_base" -maxdepth 2 -type d -iname "${DETECTED_AURORAE_THEME}" -print -quit 2>/dev/null)"
+        [[ -n "$aurorae_found_path" ]] && break
+    done
+
+    if [[ -z "$aurorae_found_path" ]]; then
+        log_warn "Tema Aurorae '$DETECTED_AURORAE_THEME' nao encontrado nos diretorios de Aurorae."
+        log_warn "Verifique se o tema foi instalado corretamente."
+        return 0
+    fi
+
+    log_info "Tema Aurorae encontrado em: $aurorae_found_path"
+
+    # Definir tema de decoracao de janelas via kwinrc
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$DETECTED_AURORAE_THEME"
 
+    # Tambem definir via Plasma 6's LookAndFeel (se disponivel)
+    if [[ -f "$HOME/.config/kwinrc" ]]; then
+        # Garantir que o kwinrc tenha a secao correta
+        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
+        kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
+    fi
+
     log_success "Tema Aurorae aplicado: $DETECTED_AURORAE_THEME"
 
-    # Recarregar kwin para aplicar imediatamente (se disponível)
+    # Recarregar kwin para aplicar imediatamente (se disponivel)
+    local kwin_reloaded=false
     if has_cmd qdbus6; then
-        qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null || true
-    elif has_cmd qdbus; then
-        qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null || true
+        if qdbus6 org.kde.KWin /KWin reloadConfig 2>/dev/null; then
+            kwin_reloaded=true
+        fi
+    fi
+    if [[ "$kwin_reloaded" == false ]] && has_cmd qdbus; then
+        if qdbus org.kde.KWin /KWin reloadConfig 2>/dev/null; then
+            kwin_reloaded=true
+        fi
+    fi
+    if [[ "$kwin_reloaded" == false ]] && has_cmd dbus-send; then
+        dbus-send --session --dest=org.kde.KWin --type=method_call /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
     fi
 }
 
@@ -1277,41 +1532,56 @@ apply_wallpaper() {
     log_arrow "Aplicando wallpaper big-retro..."
 
     if [[ -z "$DETECTED_WALLPAPER_FILE" ]]; then
-        log_warn "Wallpaper big-retro não encontrado em $WALLPAPER_SOURCE"
-        log_info "Extensões procuradas: ${WALLPAPER_EXTENSIONS[*]}"
-        log_info "O wallpaper não será alterado."
+        log_warn "Wallpaper big-retro nao encontrado."
+        log_info "Caminhos verificados:"
+        log_info "  - Arquivo: /usr/share/wallpapers/big-retro.{jpg,jpeg,png,heic}"
+        log_info "  - Diretorio: /usr/share/wallpapers/big-retro/"
+        log_info "  - Busca: /usr/share/wallpapers/ (big-retro*)"
+        log_info "O wallpaper nao sera alterado."
         return 0
+    fi
+
+    # Verificar se o arquivo de wallpaper realmente existe
+    if [[ ! -f "$DETECTED_WALLPAPER_FILE" ]]; then
+        log_error "Arquivo de wallpaper nao encontrado: $DETECTED_WALLPAPER_FILE"
+        return 1
     fi
 
     local wp_file="$DETECTED_WALLPAPER_FILE"
     local wp_filename
     wp_filename="$(basename "$wp_file")"
+    local wp_uri
+    wp_uri="$(realpath "$wp_file" 2>/dev/null || echo "$wp_file")"
 
-    # Copiar wallpaper para o diretório do usuário se ainda não estiver lá
-    local user_wallpaper_dir="$HOME/.local/share/wallpapers/big-retro"
-    if [[ ! -d "$user_wallpaper_dir" ]]; then
-        mkdir -p "$user_wallpaper_dir"
+    # Normalizar para file:// URI
+    if [[ "$wp_uri" != file://* ]]; then
+        wp_uri="file://$wp_uri"
     fi
 
-    # Copiar a imagem e os metadados
-    if [[ ! -f "$user_wallpaper_dir/$wp_filename" ]]; then
-        cp -f "$wp_file" "$user_wallpaper_dir/"
-        log_info "Wallpaper copiado para $user_wallpaper_dir/"
-    fi
+    log_info "Wallpaper encontrado: $wp_file"
 
-    # Copiar arquivo de metadados do wallpaper (metadata.desktop ou contents.json)
-    for meta_file in "$WALLPAPER_SOURCE"/metadata.desktop "$WALLPAPER_SOURCE"/contents.json; do
-        if [[ -f "$meta_file" ]]; then
-            cp -f "$meta_file" "$user_wallpaper_dir/"
+    # Metodo 1: plasma-apply-wallpaperimage (preferido no Plasma 6)
+    if has_cmd plasma-apply-wallpaperimage; then
+        if plasma-apply-wallpaperimage "$wp_file" 2>/dev/null; then
+            log_success "Wallpaper aplicado via plasma-apply-wallpaperimage: $wp_filename"
+            return 0
         fi
-    done
+        log_warn "plasma-apply-wallpaperimage falhou, tentando metodos alternativos..."
+    fi
 
-    # Criar metadata.desktop se não existir (Plasma precisa para detectar o wallpaper)
-    if [[ ! -f "$user_wallpaper_dir/metadata.desktop" && ! -f "$user_wallpaper_dir/contents.json" ]]; then
-        local wp_name="big-retro"
-        # Detectar nome sem extensão para usar como Image=
-        local wp_image_noext
-        wp_image_noext="${wp_filename%.*}"
+    # Metodo 2: Configurar o wallpaper como plugin de imagem nativo do Plasma
+    # Criar estrutura de wallpaper no diretorio do usuario se necessario
+    local user_wallpaper_dir="$HOME/.local/share/wallpapers/big-retro"
+    mkdir -p "$user_wallpaper_dir/contents/images"
+
+    # Copiar a imagem para o diretorio correto do Plasma
+    if [[ ! -f "$user_wallpaper_dir/contents/images/$wp_filename" ]]; then
+        cp -f "$wp_file" "$user_wallpaper_dir/contents/images/$wp_filename"
+        log_info "Wallpaper copiado para $user_wallpaper_dir/contents/images/"
+    fi
+
+    # Criar metadata.desktop necessario para o Plasma detectar o wallpaper
+    if [[ ! -f "$user_wallpaper_dir/metadata.desktop" ]]; then
         cat > "$user_wallpaper_dir/metadata.desktop" <<METAEOF
 [Desktop Entry]
 Name=big-retro
@@ -1328,41 +1598,38 @@ X-KDE-PluginInfo-Version=1.0
 X-KDE-PluginInfo-Website=
 
 [Wallpaper]
-Image=file://$user_wallpaper_dir/$wp_filename
+defaultFileSuffix=.jpg
+defaultHeight=1080
+defaultWidth=1920
+
+[Settings]
+Image=file://$user_wallpaper_dir/contents/images/$wp_filename
 METAEOF
-        log_info "metadata.desktop criado para o wallpaper."
+        log_info "metadata.desktop criado."
     fi
 
-    # Construir caminho de imagem absoluto com file://
-    local wp_uri
-    wp_uri="$(realpath "$user_wallpaper_dir/$wp_filename" 2>/dev/null || echo "$user_wallpaper_dir/$wp_filename")"
-    # Normalizar para file:// URI
-    if [[ "$wp_uri" != file://* ]]; then
-        wp_uri="file://$wp_uri"
-    fi
-
-    # Aplicar wallpaper via plasma-apply-wallpaperimage (preferido no Plasma 6)
-    if has_cmd plasma-apply-wallpaperimage; then
-        if plasma-apply-wallpaperimage "$user_wallpaper_dir/$wp_filename" 2>/dev/null; then
-            log_success "Wallpaper aplicado via plasma-apply-wallpaperimage: $wp_filename"
-            return 0
-        fi
-    fi
-
-    # Fallback: aplicar via kwriteconfig6 (plasmarc)
-    kwriteconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image "$wp_uri"
-    kwriteconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image "$user_wallpaper_dir/$wp_filename"
-
-    # Também configurar via kwriteconfig6 no formato que o Plasma usa para wallpapers de usuário
-    kwriteconfig6 --file plasma-org.kde.plasma.desktop-appletsrc --group ContainmentActions --key "big-retro" "$user_wallpaper_dir/$wp_filename"
-
-    # Aplicar via D-Bus como último recurso
+    # Metodo 3: Aplicar via D-Bus (configura o wallpaper em todos os desktops)
     if has_cmd qdbus6; then
         qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
-            "var allDesktops = desktops(); for (i=0;i<allDesktops.length;i++) { d = allDesktops[i]; d.wallpaperPlugin = 'org.kde.image'; d.currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General'); d.writeConfig('Image', '$wp_uri'); }" 2>/dev/null || true
+            "var allDesktops = desktops(); for (i=0;i<allDesktops.length;i++) { d = allDesktops[i]; d.wallpaperPlugin = 'org.kde.image'; d.currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General'); d.writeConfig('Image', 'file://$user_wallpaper_dir/contents/images/$wp_filename'); }" 2>/dev/null && {
+            log_success "Wallpaper aplicado via D-Bus: $wp_filename"
+            return 0
+        }
     fi
 
-    log_success "Wallpaper big-retro aplicado: $wp_filename"
+    if has_cmd qdbus; then
+        qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+            "var allDesktops = desktops(); for (i=0;i<allDesktops.length;i++) { d = allDesktops[i]; d.wallpaperPlugin = 'org.kde.image'; d.currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General'); d.writeConfig('Image', 'file://$user_wallpaper_dir/contents/images/$wp_filename'); }" 2>/dev/null && {
+            log_success "Wallpaper aplicado via D-Bus: $wp_filename"
+            return 0
+        }
+    fi
+
+    # Metodo 4: Fallback via kwriteconfig6
+    kwriteconfig6 --file plasmarc --group PlasmaViews --group2 Desktop --group3 Background --key Image "file://$user_wallpaper_dir/contents/images/$wp_filename"
+
+    log_success "Wallpaper big-retro aplicado: $wp_filename (via plasmarc)"
+    log_info "Reinicie a sessao Plasma se o wallpaper nao aparecer imediatamente."
 }
 
 # ============================================================================
@@ -1430,9 +1697,15 @@ uninstall_theme() {
         rm -f "$HOME/.local/share/color-schemes"/Fluent*.colors 2>/dev/null
         log_info "Esquemas de cores Fluent removidos."
 
-        # Temas GTK
+        # Temas GTK (em ambos os caminhos)
+        rm -rf "$HOME/.themes"/Fluent* 2>/dev/null
         rm -rf "$HOME/.local/share/themes"/Fluent* 2>/dev/null
         log_info "Temas GTK Fluent removidos."
+
+        # Limpar configurações GTK criadas pelo bigretro
+        rm -f "$HOME/.config/gtkrc-2.0" 2>/dev/null
+        rm -f "$HOME/.config/plasma-workspace/env/gtk-theme.sh" 2>/dev/null
+        rm -f "$HOME/.config/plasma-workspace/env/set-theme.sh" 2>/dev/null
 
         # Temas de ícones
         rm -rf "$HOME/.local/share/icons"/Fluent* 2>/dev/null
@@ -1443,8 +1716,9 @@ uninstall_theme() {
         rm -rf "$HOME/.local/share/plasma/look-and-feel"/*fluent* 2>/dev/null
         log_info "Look-and-Feel Fluent removidos."
 
-        # Temas Aurorae
+        # Temas Aurorae (em ambos os caminhos)
         rm -rf "$HOME/.local/share/aurorae/themes"/Fluent* 2>/dev/null
+        rm -rf "/usr/share/aurorae/themes"/Fluent* 2>/dev/null
         log_info "Temas Aurorae Fluent removidos."
 
         # Kvantum themes
@@ -1523,14 +1797,31 @@ show_status() {
         printf '  %bTema Kvantum:%b           não configurado\n' "$C_BOLD" "$C_RESET"
     fi
 
-    # GTK3
+    # GTK Themes disponiveis nos dois caminhos
+    local _gtk_found_list=""
+    for _gtk_s in "$HOME/.themes" "$HOME/.local/share/themes"; do
+        [[ -d "$_gtk_s" ]] || continue
+        for _gtk_d in "$_gtk_s"/Fluent*; do
+            [[ -d "$_gtk_d" ]] || continue
+            [[ -d "$_gtk_d/gtk-3.0" || -d "$_gtk_d/gtk-4.0" ]] || continue
+            _gtk_found_list="${_gtk_found_list}$(basename "$_gtk_d"), "
+        done
+    done
+    if [[ -n "$_gtk_found_list" ]]; then
+        _gtk_found_list="${_gtk_found_list%, }"
+        printf '  %bGTK Themes disponiveis:%b %s\n' "$C_BOLD" "$C_RESET" "$_gtk_found_list"
+    else
+        printf '  %bGTK Themes disponiveis:%b nenhum encontrado\n' "$C_BOLD" "$C_RESET"
+    fi
     printf '\n'
+
+    # GTK3
     if [[ -f "$HOME/.config/gtk-3.0/settings.ini" ]]; then
         local gtk3_theme gtk3_icons
         gtk3_theme="$(grep -oP 'gtk-theme-name=\K.*' "$HOME/.config/gtk-3.0/settings.ini" 2>/dev/null)"
         gtk3_icons="$(grep -oP 'gtk-icon-theme-name=\K.*' "$HOME/.config/gtk-3.0/settings.ini" 2>/dev/null)"
         local gtk3_indicator="$E_CROSS"
-        [[ "$gtk3_theme" == *"Fluent"* ]] && gtk3_indicator="$E_CHECK"
+        [[ "$gtk3_theme" == *"Fluent"* || "$gtk3_theme" == *"fluent"* ]] && gtk3_indicator="$E_CHECK"
         printf '  %bGTK3 Theme:%b             %s  %s\n' "$C_BOLD" "$C_RESET" "${gtk3_theme:-não definido}" "$gtk3_indicator"
         printf '  %bGTK3 Icons:%b             %s\n' "$C_BOLD" "$C_RESET" "${gtk3_icons:-não definido}"
     else
@@ -1543,7 +1834,7 @@ show_status() {
         gtk4_theme="$(grep -oP 'gtk-theme-name=\K.*' "$HOME/.config/gtk-4.0/settings.ini" 2>/dev/null)"
         gtk4_icons="$(grep -oP 'gtk-icon-theme-name=\K.*' "$HOME/.config/gtk-4.0/settings.ini" 2>/dev/null)"
         local gtk4_indicator="$E_CROSS"
-        [[ "$gtk4_theme" == *"Fluent"* ]] && gtk4_indicator="$E_CHECK"
+        [[ "$gtk4_theme" == *"Fluent"* || "$gtk4_theme" == *"fluent"* ]] && gtk4_indicator="$E_CHECK"
         printf '  %bGTK4/libadwaita:%b        %s  %s\n' "$C_BOLD" "$C_RESET" "${gtk4_theme:-não definido}" "$gtk4_indicator"
         printf '  %bGTK4 Icons:%b             %s\n' "$C_BOLD" "$C_RESET" "${gtk4_icons:-não definido}"
     else
@@ -1575,6 +1866,20 @@ show_status() {
     local aurorae_indicator="$E_CROSS"
     [[ "$current_aurorae" == *"Fluent"* || "$current_aurorae" == *"fluent"* ]] && aurorae_indicator="$E_CHECK"
     printf '  %bDecoração Aurorae:%b       %s  %s\n' "$C_BOLD" "$C_RESET" "${current_aurorae:-não definido}" "$aurorae_indicator"
+
+    # Aurorae themes disponíveis
+    local _aur_found_list=""
+    for _aur_s in "$HOME/.local/share/aurorae/themes" "/usr/share/aurorae/themes"; do
+        [[ -d "$_aur_s" ]] || continue
+        for _aur_d in "$_aur_s"/Fluent*; do
+            [[ -d "$_aur_d" ]] || continue
+            _aur_found_list="${_aur_found_list}$(basename "$_aur_d") (${_aur_s##*/}), "
+        done
+    done
+    if [[ -n "$_aur_found_list" ]]; then
+        _aur_found_list="${_aur_found_list%, }"
+        printf '  %bAurorae disponíveis:%b     %s\n' "$C_BOLD" "$C_RESET" "$_aur_found_list"
+    fi
 
     # Wallpaper
     local current_wp
